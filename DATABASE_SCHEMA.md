@@ -14,6 +14,144 @@ This design uses SQLite with SQLAlchemy ORM. Integer surrogate keys are used for
 - Annual CAMPD data cannot prove a daily relationship with weather. The optional `daily_power_records` table is the normalized extension for date-level association analysis.
 - Relationships described as correlations, associations, or relationships must not be presented as causal conclusions without a causal analysis.
 
+## Entity-relationship diagram
+
+The diagram below is the maintained relationship overview for the schema. It uses Mermaid ER notation, which is rendered by GitHub and supported by many Markdown viewers. The table sections that follow remain the authoritative source for complete columns, constraints, indexes, and design notes.
+
+```mermaid
+erDiagram
+	DATASETS {
+		int dataset_id PK
+		string data_source
+		int reporting_year
+		string status
+	}
+	FACILITIES {
+		int facility_id PK
+		string epa_facility_id UK
+		string facility_name
+		string state
+	}
+	UNITS {
+		int unit_id PK
+		int facility_id FK
+		string epa_unit_id
+		string primary_fuel
+	}
+	ANNUAL_RECORDS {
+		int annual_record_id PK
+		int unit_id FK
+		int dataset_id FK
+		int reporting_year
+	}
+	DAILY_POWER_RECORDS {
+		int daily_record_id PK
+		int unit_id FK
+		int dataset_id FK
+		date observation_date
+	}
+	UPLOADED_FILES {
+		int uploaded_file_id PK
+		int dataset_id FK
+		string content_sha256 UK
+		string validation_status
+	}
+	UPLOAD_VALIDATION_ERRORS {
+		int validation_error_id PK
+		int uploaded_file_id FK
+		int source_row_number
+		string error_code
+	}
+	DATA_PROVENANCE {
+		int provenance_id PK
+		int dataset_id FK
+		int uploaded_file_id FK
+		string retrieval_method
+	}
+	WEATHER_STATIONS {
+		int weather_station_id PK
+		string ncei_station_id UK
+		string station_name
+	}
+	WEATHER_RECORDS {
+		int weather_record_id PK
+		int weather_station_id FK
+		date observation_date
+		decimal average_temperature
+	}
+	WEATHER_FACILITY_LINKS {
+		int weather_facility_link_id PK
+		int facility_id FK
+		int weather_station_id FK
+		boolean is_primary
+	}
+	TRACI_FACTORS {
+		int traci_factor_id PK
+		string pollutant
+		string impact_category
+		string traci_version
+	}
+	INDICATOR_DEFINITIONS {
+		int indicator_definition_id PK
+		int traci_factor_id FK
+		string indicator_name
+		string version
+	}
+	CALCULATED_INDICATORS {
+		int calculated_indicator_id PK
+		int indicator_definition_id FK
+		int facility_id FK
+		int unit_id FK
+		int dataset_id FK
+		int annual_record_id FK
+		int daily_record_id FK
+	}
+	WEIGHT_SCENARIOS {
+		int weight_scenario_id PK
+		string scenario_name UK
+	}
+	SCENARIO_WEIGHTS {
+		int scenario_weight_id PK
+		int weight_scenario_id FK
+		int indicator_definition_id FK
+		decimal weight
+	}
+	SCORE_RESULTS {
+		int score_result_id PK
+		int weight_scenario_id FK
+		int facility_id FK
+		int unit_id FK
+		decimal score
+	}
+
+	DATASETS ||--o{ ANNUAL_RECORDS : contains
+	DATASETS ||--o{ DAILY_POWER_RECORDS : contains
+	DATASETS ||--o{ UPLOADED_FILES : groups
+	DATASETS ||--o{ DATA_PROVENANCE : documents
+	FACILITIES ||--o{ UNITS : owns
+	UNITS ||--o{ ANNUAL_RECORDS : produces
+	UNITS ||--o{ DAILY_POWER_RECORDS : produces
+	UPLOADED_FILES ||--o{ UPLOAD_VALIDATION_ERRORS : records
+	UPLOADED_FILES ||--o{ DATA_PROVENANCE : describes
+	WEATHER_STATIONS ||--o{ WEATHER_RECORDS : observes
+	FACILITIES ||--o{ WEATHER_FACILITY_LINKS : maps
+	WEATHER_STATIONS ||--o{ WEATHER_FACILITY_LINKS : selected_for
+	TRACI_FACTORS ||--o{ INDICATOR_DEFINITIONS : informs
+	INDICATOR_DEFINITIONS ||--o{ CALCULATED_INDICATORS : defines
+	FACILITIES o|--o{ CALCULATED_INDICATORS : subject_of
+	UNITS o|--o{ CALCULATED_INDICATORS : subject_of
+	DATASETS o|--o{ CALCULATED_INDICATORS : source_of
+	ANNUAL_RECORDS o|--o{ CALCULATED_INDICATORS : source_of
+	DAILY_POWER_RECORDS o|--o{ CALCULATED_INDICATORS : source_of
+	WEIGHT_SCENARIOS ||--o{ SCENARIO_WEIGHTS : assigns
+	INDICATOR_DEFINITIONS ||--o{ SCENARIO_WEIGHTS : weighted_by
+	WEIGHT_SCENARIOS ||--o{ SCORE_RESULTS : produces
+	FACILITIES o|--o{ SCORE_RESULTS : scored
+	UNITS o|--o{ SCORE_RESULTS : scored
+```
+
+`o|--o{` marks an optional foreign-key relationship used by polymorphic-style result rows: a calculated indicator or score result may target a facility, unit, or source record depending on its grain. `||--o{` marks a required parent for each child row.
+
 ## SQLAlchemy conventions
 
 `DateTime(timezone=True)` is used for timestamps stored in UTC. `Date` is used for calendar dates. `Numeric(20, 6)` is preferred for measurements where precision matters; `Float` is acceptable for geographic coordinates and weather values where source precision varies. Boolean fields use `Boolean`. Every foreign key should use `ondelete="RESTRICT"` unless the relationship is explicitly an owned child such as validation errors.

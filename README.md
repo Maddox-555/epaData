@@ -4,7 +4,9 @@ EPA Data Management, Evaluation, and Visualization System.
 
 ## Documentation
 
+- [ER Diagram](https://app.eraser.io/workspace/CeQBm54ImyOxlG4qE6Rx?origin=share&diagram=t0pZbR6yUBdUV3fO7zQhL)
 - [Complete database schema](DATABASE_SCHEMA.md)
+- The schema document includes a Mermaid entity-relationship diagram and the full table-by-table definition.
 - [SQLAlchemy model definitions](models.py)
 
 ## Backend API
