@@ -39,7 +39,7 @@ SOURCE_DEFINITIONS = {
     "nasa-power": {
         "name": "NASA POWER",
         "description": "Monthly point climate data summarized to annual facility climate records.",
-        "default_endpoint": "https://power.larc.nasa.gov/api/temporal/monthly/point",
+        "default_endpoint": "https://power.larc.nasa.gov/api/temporal/monthly/regional",
         "supported_import": False,
     },
     "traci": {

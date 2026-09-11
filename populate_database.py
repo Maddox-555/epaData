@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import io
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -25,14 +26,12 @@ from models import (
     Facility,
     IndicatorDefinition,
     TraciFactor,
-    WeatherFacilityLink,
     WeatherAnnualRecord,
-    WeatherStation,
     WeightScenario,
 )
 
 
-NASA_POWER_MONTHLY_URL = "https://power.larc.nasa.gov/api/temporal/monthly/point"
+NASA_POWER_MONTHLY_URL = "https://power.larc.nasa.gov/api/temporal/monthly/regional"
 TRACI_URL = "https://www.epa.gov/system/files/documents/2024-01/traci_2_2.xlsx"
 EPA_FACILITIES_URL = "https://api.epa.gov/easey/facilities-mgmt/facilities/attributes"
 EPA_ANNUAL_EMISSIONS_URL = "https://api.epa.gov/easey/emissions-mgmt/emissions/apportioned/annual"
@@ -214,25 +213,40 @@ def load_traci(session: Session, content: bytes | None = None, url: str = TRACI_
 
 
 def load_nasa_power_annual_weather(session: Session, years: list[int], workers: int = 6) -> int:
-    """Load compact annual climate summaries from NASA POWER monthly point data."""
-    links = session.scalars(select(WeatherFacilityLink)).all()
-    station_ids = sorted({link.weather_station_id for link in links})
-    stations = {
-        station.weather_station_id: station
-        for station in session.scalars(select(WeatherStation).where(WeatherStation.weather_station_id.in_(station_ids))).all()
+    """Load compact annual climate summaries from NASA POWER at facility coordinates."""
+    facilities = {
+        facility.facility_id: facility
+        for facility in session.scalars(select(Facility).where(Facility.latitude.is_not(None), Facility.longitude.is_not(None))).all()
     }
     existing = {
-        (record.weather_station_id, record.reporting_year)
+        (record.facility_id, record.reporting_year)
         for record in session.scalars(select(WeatherAnnualRecord)).all()
     }
     parameters = "T2M,T2M_MAX,T2M_MIN,PRECTOTCORR,WS2M"
 
-    def fetch(station: WeatherStation) -> tuple[int, dict[str, dict[str, float]]]:
+    facilities_to_load = [
+        facility for facility in facilities.values()
+        if any((facility.facility_id, year) not in existing for year in years)
+    ]
+    if not facilities_to_load:
+        return 0
+
+    # Regional requests return NASA POWER's native grid (0.5 degree latitude by
+    # 0.625 degree longitude), so a tile replaces one request per facility.
+    tiles: dict[tuple[int, int], list[Facility]] = {}
+    for facility in facilities_to_load:
+        tile = (math.floor(facility.latitude / 10), math.floor(facility.longitude / 10))
+        tiles.setdefault(tile, []).append(facility)
+
+    def fetch_region(tile: tuple[int, int], parameter: str) -> tuple[tuple[int, int], str, list[tuple[float, float, dict[str, float]]]]:
+        latitude_min, longitude_min = tile[0] * 10, tile[1] * 10
         request = {
-            "parameters": parameters,
+            "parameters": parameter,
             "community": "RE",
-            "longitude": station.longitude,
-            "latitude": station.latitude,
+            "longitude-min": longitude_min,
+            "longitude-max": longitude_min + 10,
+            "latitude-min": latitude_min,
+            "latitude-max": latitude_min + 10,
             "start": min(years),
             "end": max(years),
             "format": "JSON",
@@ -241,15 +255,49 @@ def load_nasa_power_annual_weather(session: Session, years: list[int], workers: 
             response = requests.get(NASA_POWER_MONTHLY_URL, params=request, timeout=(15, 60))
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()
-                return station.weather_station_id, response.json()["properties"]["parameter"]
+                features = response.json().get("features", [])
+                values = []
+                for feature in features:
+                    coordinates = feature.get("geometry", {}).get("coordinates", [])
+                    parameters_data = feature.get("properties", {}).get("parameter", {})
+                    if len(coordinates) >= 2 and parameter in parameters_data:
+                        values.append((float(coordinates[1]), float(coordinates[0]), parameters_data[parameter]))
+                if not values:
+                    raise RuntimeError(f"NASA POWER regional response contained no {parameter} data for tile {tile}")
+                return tile, parameter, values
             retry_after = response.headers.get("Retry-After")
             delay = float(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
             time.sleep(min(delay, 30))
         response.raise_for_status()
-        raise RuntimeError(f"NASA POWER request failed after retries for station {station.weather_station_id}")
+        raise RuntimeError(f"NASA POWER regional request failed after retries for tile {tile}")
 
-    def annual_rows(station_id: int, values: dict[str, dict[str, float]]) -> list[WeatherAnnualRecord]:
-        station = stations[station_id]
+    regional_values: dict[tuple[int, int], dict[str, list[tuple[float, float, dict[str, float]]]]] = {}
+    requests_to_make = [(tile, parameter) for tile in tiles for parameter in parameters.split(",")]
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [executor.submit(fetch_region, tile, parameter) for tile, parameter in requests_to_make]
+        for completed, future in enumerate(as_completed(futures), start=1):
+            tile, parameter, values = future.result()
+            regional_values.setdefault(tile, {})[parameter] = values
+            if completed % 25 == 0:
+                print(f"NASA POWER regional weather: {completed}/{len(futures)} requests")
+
+    def fetch(facility: Facility) -> tuple[int, dict[str, dict[str, float]], float, float]:
+        tile = (math.floor(facility.latitude / 10), math.floor(facility.longitude / 10))
+        tile_values = regional_values[tile]
+        grid = tile_values["T2M"]
+        nearest = min(grid, key=lambda point: (point[0] - facility.latitude) ** 2 + (point[1] - facility.longitude) ** 2)
+        grid_latitude, grid_longitude = nearest[:2]
+        values = {}
+        for parameter in parameters.split(","):
+            parameter_values = min(
+                tile_values[parameter],
+                key=lambda point: (point[0] - grid_latitude) ** 2 + (point[1] - grid_longitude) ** 2,
+            )
+            values[parameter] = parameter_values[2]
+        return facility.facility_id, values, grid_latitude, grid_longitude
+
+    def annual_rows(facility_id: int, values: dict[str, dict[str, float]], grid_latitude: float, grid_longitude: float) -> list[WeatherAnnualRecord]:
+        facility = facilities[facility_id]
         rows: list[WeatherAnnualRecord] = []
         for year in years:
             keys = [f"{year}{month:02d}" for month in range(1, 13)]
@@ -263,7 +311,7 @@ def load_nasa_power_annual_weather(session: Session, years: list[int], workers: 
             cdd = sum(max(value - 18.3, 0) for value in averages)
             hdd = sum(max(18.3 - value, 0) for value in averages)
             rows.append(WeatherAnnualRecord(
-                weather_station_id=station.weather_station_id,
+                facility_id=facility.facility_id,
                 reporting_year=year,
                 average_temperature=sum(averages) / len(averages),
                 maximum_temperature=max(maximums) if maximums else None,
@@ -276,25 +324,25 @@ def load_nasa_power_annual_weather(session: Session, years: list[int], workers: 
                 extreme_heat_days=sum(1 for value in maximums if value >= 35),
                 extreme_heat_threshold=35,
                 source_name="NASA POWER",
-                measurement_unit_metadata={"temperature": "C", "precipitation": "mm/day converted to annual mm", "wind_speed": "m/s", "degree_day_base": "18.3 C", "source_resolution": "monthly point", "source_latitude": station.latitude, "source_longitude": station.longitude},
+                measurement_unit_metadata={"temperature": "C", "precipitation": "mm/day converted to annual mm", "wind_speed": "m/s", "degree_day_base": "18.3 C", "source_resolution": "monthly regional grid", "facility_latitude": facility.latitude, "facility_longitude": facility.longitude, "grid_latitude": grid_latitude, "grid_longitude": grid_longitude},
             ))
         return rows
 
     loaded = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = [executor.submit(fetch, station) for station in stations.values()]
+        futures = [executor.submit(fetch, facility) for facility in facilities_to_load]
         for completed, future in enumerate(as_completed(futures), start=1):
-            station_id, values = future.result()
-            rows = [row for row in annual_rows(station_id, values) if (row.weather_station_id, row.reporting_year) not in existing]
+            facility_id, values, grid_latitude, grid_longitude = future.result()
+            rows = [row for row in annual_rows(facility_id, values, grid_latitude, grid_longitude) if (row.facility_id, row.reporting_year) not in existing]
             session.bulk_insert_mappings(
                 WeatherAnnualRecord,
                 [{key: value for key, value in row.__dict__.items() if not key.startswith("_")} for row in rows],
             )
-            existing.update((row.weather_station_id, row.reporting_year) for row in rows)
+            existing.update((row.facility_id, row.reporting_year) for row in rows)
             loaded += len(rows)
             if completed % 100 == 0:
                 session.commit()
-                print(f"NASA POWER annual weather: {completed}/{len(futures)} stations, {loaded} rows")
+                print(f"NASA POWER annual weather: {completed}/{len(futures)} facilities, {loaded} rows")
     session.commit()
     return loaded
 

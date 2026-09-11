@@ -81,7 +81,7 @@ class Facility(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     units: Mapped[list[Unit]] = relationship(back_populates="facility")
-    weather_links: Mapped[list[WeatherFacilityLink]] = relationship(back_populates="facility")
+    weather_annual_records: Mapped[list[WeatherAnnualRecord]] = relationship(back_populates="facility")
     calculated_indicators: Mapped[list[CalculatedIndicator]] = relationship(back_populates="facility")
     score_results: Mapped[list[ScoreResult]] = relationship(back_populates="facility")
 
@@ -249,41 +249,16 @@ class DataProvenance(Base):
     uploaded_file: Mapped[UploadedFile | None] = relationship(back_populates="provenance")
 
 
-class WeatherStation(Base):
-    __tablename__ = "weather_stations"
-    __table_args__ = (
-        UniqueConstraint("ncei_station_id", name="uq_weather_station_ncei_id"),
-        Index("ix_weather_stations_state_county", "state", "county"),
-        Index("ix_weather_stations_coordinates", "latitude", "longitude"),
-    )
-
-    weather_station_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ncei_station_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    station_name: Mapped[str | None] = mapped_column(String(255))
-    latitude: Mapped[float] = mapped_column(Float, nullable=False)
-    longitude: Mapped[float] = mapped_column(Float, nullable=False)
-    state: Mapped[str | None] = mapped_column(String(2))
-    county: Mapped[str | None] = mapped_column(String(100))
-    elevation_m: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
-    network: Mapped[str | None] = mapped_column(String(100))
-    source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NASA POWER")
-    active_from: Mapped[date | None] = mapped_column(Date)
-    active_to: Mapped[date | None] = mapped_column(Date)
-
-    annual_records: Mapped[list[WeatherAnnualRecord]] = relationship(back_populates="weather_station")
-    facility_links: Mapped[list[WeatherFacilityLink]] = relationship(back_populates="weather_station")
-
-
 class WeatherAnnualRecord(Base):
     __tablename__ = "weather_annual_records"
     __table_args__ = (
-        UniqueConstraint("weather_station_id", "reporting_year", name="uq_weather_station_year"),
-        Index("ix_weather_annual_station_year", "weather_station_id", "reporting_year"),
+        UniqueConstraint("facility_id", "reporting_year", name="uq_weather_facility_year"),
+        Index("ix_weather_annual_facility_year", "facility_id", "reporting_year"),
         Index("ix_weather_annual_year", "reporting_year"),
     )
 
     weather_annual_record_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    weather_station_id: Mapped[int] = mapped_column(ForeignKey("weather_stations.weather_station_id", ondelete="RESTRICT"), nullable=False)
+    facility_id: Mapped[int] = mapped_column(ForeignKey("facilities.facility_id", ondelete="RESTRICT"), nullable=False)
     reporting_year: Mapped[int] = mapped_column(Integer, nullable=False)
     average_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     maximum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
@@ -298,32 +273,7 @@ class WeatherAnnualRecord(Base):
     source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NASA POWER")
     measurement_unit_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
-    weather_station: Mapped[WeatherStation] = relationship(back_populates="annual_records")
-
-
-class WeatherFacilityLink(Base):
-    __tablename__ = "weather_facility_links"
-    __table_args__ = (
-        UniqueConstraint("facility_id", "weather_station_id", "valid_from", "valid_to", name="uq_facility_station_period"),
-        Index("ix_weather_links_facility_primary", "facility_id", "is_primary"),
-        Index("ix_weather_links_station", "weather_station_id"),
-        Index("ix_weather_links_distance", "distance_km"),
-    )
-
-    weather_facility_link_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    facility_id: Mapped[int] = mapped_column(ForeignKey("facilities.facility_id", ondelete="RESTRICT"), nullable=False)
-    weather_station_id: Mapped[int] = mapped_column(ForeignKey("weather_stations.weather_station_id", ondelete="RESTRICT"), nullable=False)
-    link_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    distance_km: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
-    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    selection_method: Mapped[str] = mapped_column(String(100), nullable=False)
-    valid_from: Mapped[date | None] = mapped_column(Date)
-    valid_to: Mapped[date | None] = mapped_column(Date)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    notes: Mapped[str | None] = mapped_column(Text)
-
-    facility: Mapped[Facility] = relationship(back_populates="weather_links")
-    weather_station: Mapped[WeatherStation] = relationship(back_populates="facility_links")
+    facility: Mapped[Facility] = relationship(back_populates="weather_annual_records")
 
 
 class IndicatorDefinition(Base):
