@@ -36,10 +36,10 @@ SOURCE_DEFINITIONS = {
         "default_endpoint": "https://api.epa.gov/easey/campd/services/",
         "supported_import": True,
     },
-    "noaa-ghcn-daily": {
-        "name": "NOAA NCEI GHCN-Daily",
-        "description": "NOAA daily weather observations for facility and weather analysis.",
-        "default_endpoint": "https://www.ncei.noaa.gov/cdo-web/api/v2/data",
+    "nasa-power": {
+        "name": "NASA POWER",
+        "description": "Monthly point climate data summarized to annual facility climate records.",
+        "default_endpoint": "https://power.larc.nasa.gov/api/temporal/monthly/point",
         "supported_import": False,
     },
     "traci": {

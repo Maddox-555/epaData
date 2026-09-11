@@ -30,7 +30,7 @@ The backend exposes JSON/CSV responses and does not implement a frontend yet:
 
 ### Populate source data
 
-The repeatable loader is `populate_database.py`. It downloads the official TRACI 2.2 workbook and NOAA GHCN-Daily station catalog, then seeds the indicator definitions:
+The repeatable loader is `populate_database.py`. It downloads the official TRACI 2.2 workbook and NASA POWER climate data, then seeds the indicator definitions:
 
 ```powershell
 python populate_database.py
@@ -51,15 +51,15 @@ Alternatively, CAMPD exports can be downloaded from the bulk-data or query inter
 python populate_database.py --epa-file .\campd-annual.csv
 ```
 
-After EPA facilities have been loaded, load NOAA history for the years needed by the project. The loader chooses the nearest GHCN-Daily station for each facility with coordinates and preserves the station link and source units:
+After EPA facilities have been loaded, load NASA POWER climate data for the years needed by the project. The loader uses linked facility coordinates and stores one annual summary per climate point/year:
 
 ```powershell
-python populate_database.py --noaa-weather --years 2022,2023,2024
+python populate_database.py --nasa-weather --years 2020,2021,2022,2023,2024 --weather-workers 16
 ```
 
 `--epa-file` accepts CSV, XLS, or XLSX. The database intentionally uses annual CAMPD grain; it does not include a daily power table because annual totals cannot be converted into valid daily observations. The loader records source URLs and creates dataset/provenance rows for each official source.
 
-The source catalog currently covers EPA CAMPD, NOAA NCEI GHCN-Daily, and TRACI. EPA CAMPD CSV/Excel/JSON imports use the annual CAMPD model. NOAA weather and TRACI are identified in the catalog, but require their source-specific row mappers before they can be persisted into `weather_records` and `traci_factors`.
+The source catalog currently covers EPA CAMPD, NASA POWER climate data, and TRACI. EPA CAMPD CSV/Excel/JSON imports use the annual CAMPD model. NASA POWER annual climate summaries are persisted in `weather_annual_records`.
 
 Run the backend tests with `pytest`.
 

@@ -64,7 +64,7 @@ def test_sources_endpoint_describes_supported_original_sources(client):
 
     assert response.status_code == 200
     assert response.json["epa-campd"]["supported_import"] is True
-    assert response.json["noaa-ghcn-daily"]["default_endpoint"].startswith("https://")
+    assert response.json["nasa-power"]["default_endpoint"].startswith("https://")
 
 
 def test_epa_campd_retrieval_records_source_url(client, monkeypatch):

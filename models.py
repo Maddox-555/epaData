@@ -266,47 +266,39 @@ class WeatherStation(Base):
     county: Mapped[str | None] = mapped_column(String(100))
     elevation_m: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     network: Mapped[str | None] = mapped_column(String(100))
-    source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NOAA NCEI")
+    source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NASA POWER")
     active_from: Mapped[date | None] = mapped_column(Date)
     active_to: Mapped[date | None] = mapped_column(Date)
 
-    records: Mapped[list[WeatherRecord]] = relationship(back_populates="weather_station")
+    annual_records: Mapped[list[WeatherAnnualRecord]] = relationship(back_populates="weather_station")
     facility_links: Mapped[list[WeatherFacilityLink]] = relationship(back_populates="weather_station")
 
 
-class WeatherRecord(Base):
-    __tablename__ = "weather_records"
+class WeatherAnnualRecord(Base):
+    __tablename__ = "weather_annual_records"
     __table_args__ = (
-        UniqueConstraint("weather_station_id", "observation_date", name="uq_weather_station_date"),
-        Index("ix_weather_records_station_date", "weather_station_id", "observation_date"),
-        Index("ix_weather_records_date", "observation_date"),
-        Index("ix_weather_records_avg_temp", "average_temperature"),
-        Index("ix_weather_records_max_temp", "maximum_temperature"),
-        Index("ix_weather_records_cdd", "cooling_degree_days"),
-        Index("ix_weather_records_extreme_heat", "is_extreme_heat"),
+        UniqueConstraint("weather_station_id", "reporting_year", name="uq_weather_station_year"),
+        Index("ix_weather_annual_station_year", "weather_station_id", "reporting_year"),
+        Index("ix_weather_annual_year", "reporting_year"),
     )
 
-    weather_record_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    weather_annual_record_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     weather_station_id: Mapped[int] = mapped_column(ForeignKey("weather_stations.weather_station_id", ondelete="RESTRICT"), nullable=False)
-    observation_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reporting_year: Mapped[int] = mapped_column(Integer, nullable=False)
     average_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     maximum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     minimum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    precipitation: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
-    snowfall: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
-    wind_speed: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    relative_humidity: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
-    pressure: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
-    cooling_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    heating_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    is_extreme_heat: Mapped[bool | None] = mapped_column(Boolean)
+    precipitation_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    snowfall_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    wind_speed_average: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+    cooling_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    heating_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    extreme_heat_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     extreme_heat_threshold: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NOAA NCEI")
-    source_record_id: Mapped[str | None] = mapped_column(String(100))
+    source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NASA POWER")
     measurement_unit_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    quality_flags: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
-    weather_station: Mapped[WeatherStation] = relationship(back_populates="records")
+    weather_station: Mapped[WeatherStation] = relationship(back_populates="annual_records")
 
 
 class WeatherFacilityLink(Base):

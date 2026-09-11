@@ -1,13 +1,14 @@
-"""Populate the normalized source tables from official EPA and NOAA files."""
+"""Populate normalized EPA, TRACI, and NASA POWER source tables."""
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import io
-import math
 import os
-from datetime import date, datetime, timezone
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +26,13 @@ from models import (
     IndicatorDefinition,
     TraciFactor,
     WeatherFacilityLink,
-    WeatherRecord,
+    WeatherAnnualRecord,
     WeatherStation,
     WeightScenario,
 )
 
 
-NOAA_STATIONS_URL = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/ghcnd-stations.txt"
-NOAA_STATION_URL = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/by_station/{station}.csv"
-NOAA_DLY_URL = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/all/{station}.dly"
+NASA_POWER_MONTHLY_URL = "https://power.larc.nasa.gov/api/temporal/monthly/point"
 TRACI_URL = "https://www.epa.gov/system/files/documents/2024-01/traci_2_2.xlsx"
 EPA_FACILITIES_URL = "https://api.epa.gov/easey/facilities-mgmt/facilities/attributes"
 EPA_ANNUAL_EMISSIONS_URL = "https://api.epa.gov/easey/emissions-mgmt/emissions/apportioned/annual"
@@ -43,37 +42,6 @@ def _download(url: str, headers: dict[str, str] | None = None) -> bytes:
     response = requests.get(url, headers=headers or {}, timeout=120)
     response.raise_for_status()
     return response.content
-
-
-def _noaa_station_frame(station_id: str) -> pd.DataFrame | None:
-    csv_url = NOAA_STATION_URL.format(station=station_id)
-    response = requests.get(csv_url, timeout=120)
-    if response.status_code == 200:
-        return pd.read_csv(io.BytesIO(response.content), header=None, names=["station", "date", "element", "value", "mflag", "qflag", "sflag", "obstime"], dtype=str)
-    if response.status_code != 404:
-        response.raise_for_status()
-    dly_response = requests.get(NOAA_DLY_URL.format(station=station_id), timeout=120)
-    if dly_response.status_code == 404:
-        return None
-    dly_response.raise_for_status()
-    rows: list[dict[str, str]] = []
-    for line in dly_response.text.splitlines():
-        if len(line) < 269:
-            continue
-        station, year, month, element = line[0:11], line[11:15], line[15:17], line[17:21]
-        for day in range(1, 32):
-            offset = 21 + (day - 1) * 8
-            rows.append({
-                "station": station,
-                "date": f"{year}{month}{day:02d}",
-                "element": element,
-                "value": line[offset:offset + 5].strip(),
-                "mflag": line[offset + 5:offset + 6].strip(),
-                "qflag": line[offset + 6:offset + 7].strip(),
-                "sflag": line[offset + 7:offset + 8].strip(),
-                "obstime": "",
-            })
-    return pd.DataFrame(rows)
 
 
 def _source_dataset(session: Session, name: str, source: str, url: str, count: int) -> Dataset:
@@ -245,110 +213,89 @@ def load_traci(session: Session, content: bytes | None = None, url: str = TRACI_
     return inserted
 
 
-def load_noaa_stations(session: Session, content: bytes | None = None, url: str = NOAA_STATIONS_URL) -> int:
-    content = content or _download(url)
-    lines = [line for line in content.decode("ascii", errors="replace").splitlines() if len(line) >= 71]
-    _source_dataset(session, "ghcnd-stations.txt", "NOAA NCEI GHCN-Daily", url, len(lines))
-    inserted = 0
-    for line in lines:
-        if len(line) < 71:
-            continue
-        station_id = line[0:11].strip()
-        if not station_id or session.scalar(select(WeatherStation).where(WeatherStation.ncei_station_id == station_id)):
-            continue
-        try:
-            latitude, longitude, elevation = float(line[12:20]), float(line[21:30]), float(line[31:37])
-        except ValueError:
-            continue
-        session.add(WeatherStation(
-            ncei_station_id=station_id, latitude=latitude, longitude=longitude,
-            elevation_m=None if elevation <= -999 else elevation,
-            state=line[38:40].strip() or None, station_name=line[41:71].strip() or None,
-            network=station_id[2], source_name="NOAA NCEI GHCN-Daily",
-        ))
-        inserted += 1
-    session.commit()
-    return inserted
-
-
-def _nearest_station(session: Session, facility: Facility) -> tuple[WeatherStation, float] | None:
-    if facility.latitude is None or facility.longitude is None:
-        return None
-    stations = session.scalars(select(WeatherStation)).all()
-    if not stations:
-        return None
-    selected = min(stations, key=lambda station: (station.latitude - facility.latitude) ** 2 + (station.longitude - facility.longitude) ** 2)
-    distance = 111.2 * math.sqrt((selected.latitude - facility.latitude) ** 2 + ((selected.longitude - facility.longitude) * math.cos(math.radians(facility.latitude))) ** 2)
-    return selected, distance
-
-
-def load_noaa_facility_weather(session: Session, years: list[int], station_limit: int | None = None) -> int:
-    facilities = session.scalars(select(Facility).where(Facility.latitude.is_not(None), Facility.longitude.is_not(None))).all()
-    stations = session.scalars(select(WeatherStation)).all()
-    if not stations:
-        return 0
-    stations_by_state: dict[str | None, list[WeatherStation]] = {}
-    for station in stations:
-        stations_by_state.setdefault(station.state, []).append(station)
-    existing_links = {
-        (link.facility_id, link.weather_station_id)
-        for link in session.scalars(select(WeatherFacilityLink)).all()
+def load_nasa_power_annual_weather(session: Session, years: list[int], workers: int = 6) -> int:
+    """Load compact annual climate summaries from NASA POWER monthly point data."""
+    links = session.scalars(select(WeatherFacilityLink)).all()
+    station_ids = sorted({link.weather_station_id for link in links})
+    stations = {
+        station.weather_station_id: station
+        for station in session.scalars(select(WeatherStation).where(WeatherStation.weather_station_id.in_(station_ids))).all()
     }
-    station_facilities: dict[int, list[Facility]] = {}
-    for facility in facilities:
-        candidates = stations_by_state.get(facility.state) or stations
-        nearest = min(candidates, key=lambda station: (station.latitude - facility.latitude) ** 2 + (station.longitude - facility.longitude) ** 2)
-        distance = 111.2 * math.sqrt((nearest.latitude - facility.latitude) ** 2 + ((nearest.longitude - facility.longitude) * math.cos(math.radians(facility.latitude))) ** 2)
-        station_facilities.setdefault(nearest.weather_station_id, []).append(facility)
-        if (facility.facility_id, nearest.weather_station_id) not in existing_links:
-            session.add(WeatherFacilityLink(
-                facility_id=facility.facility_id, weather_station_id=nearest.weather_station_id,
-                link_type="nearest", distance_km=distance, is_primary=True,
-                selection_method="nearest station by haversine distance",
-                created_at=datetime.now(timezone.utc),
+    existing = {
+        (record.weather_station_id, record.reporting_year)
+        for record in session.scalars(select(WeatherAnnualRecord)).all()
+    }
+    parameters = "T2M,T2M_MAX,T2M_MIN,PRECTOTCORR,WS2M"
+
+    def fetch(station: WeatherStation) -> tuple[int, dict[str, dict[str, float]]]:
+        request = {
+            "parameters": parameters,
+            "community": "RE",
+            "longitude": station.longitude,
+            "latitude": station.latitude,
+            "start": min(years),
+            "end": max(years),
+            "format": "JSON",
+        }
+        for attempt in range(5):
+            response = requests.get(NASA_POWER_MONTHLY_URL, params=request, timeout=(15, 60))
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                response.raise_for_status()
+                return station.weather_station_id, response.json()["properties"]["parameter"]
+            retry_after = response.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
+            time.sleep(min(delay, 30))
+        response.raise_for_status()
+        raise RuntimeError(f"NASA POWER request failed after retries for station {station.weather_station_id}")
+
+    def annual_rows(station_id: int, values: dict[str, dict[str, float]]) -> list[WeatherAnnualRecord]:
+        station = stations[station_id]
+        rows: list[WeatherAnnualRecord] = []
+        for year in years:
+            keys = [f"{year}{month:02d}" for month in range(1, 13)]
+            averages = [values["T2M"][key] for key in keys if values["T2M"].get(key, -999) > -900]
+            maximums = [values["T2M_MAX"][key] for key in keys if values["T2M_MAX"].get(key, -999) > -900]
+            minimums = [values["T2M_MIN"][key] for key in keys if values["T2M_MIN"].get(key, -999) > -900]
+            precipitation = [values["PRECTOTCORR"][key] for key in keys if values["PRECTOTCORR"].get(key, -999) > -900]
+            winds = [values["WS2M"][key] for key in keys if values["WS2M"].get(key, -999) > -900]
+            if not averages:
+                continue
+            cdd = sum(max(value - 18.3, 0) for value in averages)
+            hdd = sum(max(18.3 - value, 0) for value in averages)
+            rows.append(WeatherAnnualRecord(
+                weather_station_id=station.weather_station_id,
+                reporting_year=year,
+                average_temperature=sum(averages) / len(averages),
+                maximum_temperature=max(maximums) if maximums else None,
+                minimum_temperature=min(minimums) if minimums else None,
+                precipitation_total=sum(value * 365 / 12 for value in precipitation) if precipitation else None,
+                snowfall_total=None,
+                wind_speed_average=sum(winds) / len(winds) if winds else None,
+                cooling_degree_days=cdd * 365 / 12,
+                heating_degree_days=hdd * 365 / 12,
+                extreme_heat_days=sum(1 for value in maximums if value >= 35),
+                extreme_heat_threshold=35,
+                source_name="NASA POWER",
+                measurement_unit_metadata={"temperature": "C", "precipitation": "mm/day converted to annual mm", "wind_speed": "m/s", "degree_day_base": "18.3 C", "source_resolution": "monthly point", "source_latitude": station.latitude, "source_longitude": station.longitude},
             ))
-            existing_links.add((facility.facility_id, nearest.weather_station_id))
-    session.commit()
+        return rows
+
     loaded = 0
-    for station_id in list(station_facilities)[:station_limit] if station_limit is not None else station_facilities:
-        station = next(station for station in stations if station.weather_station_id == station_id)
-        if not station:
-            break
-        frame = _noaa_station_frame(station.ncei_station_id)
-        if frame is None:
-            print(f"NOAA {station.ncei_station_id}: no station file available")
-            continue
-        frame = frame[frame["date"].str[:4].astype(int).isin(years)]
-        grouped: dict[str, dict[str, Any]] = {}
-        for _, row in frame.iterrows():
-            if row["qflag"] == "X" or row["value"] in {"-9999", "nan"}:
-                continue
-            grouped.setdefault(row["date"], {})[row["element"]] = row
-        for day, values in grouped.items():
-            def val(element: str, scale: float = 10.0) -> float | None:
-                item = values.get(element)
-                return None if item is None else float(item["value"]) / scale
-            avg = val("TAVG")
-            if avg is None and val("TMAX") is not None and val("TMIN") is not None:
-                avg = (val("TMAX") + val("TMIN")) / 2
-            record_date = date(int(day[:4]), int(day[4:6]), int(day[6:8]))
-            exists = session.scalar(select(WeatherRecord).where(WeatherRecord.weather_station_id == station.weather_station_id, WeatherRecord.observation_date == record_date))
-            if exists:
-                continue
-            session.add(WeatherRecord(
-                weather_station_id=station.weather_station_id, observation_date=record_date,
-                average_temperature=avg, maximum_temperature=val("TMAX"), minimum_temperature=val("TMIN"),
-                precipitation=val("PRCP", 10), snowfall=val("SNOW"), wind_speed=val("AWND", 10),
-                cooling_degree_days=None if avg is None else max(avg - 18.3, 0),
-                heating_degree_days=None if avg is None else max(18.3 - avg, 0),
-                is_extreme_heat=None if val("TMAX") is None else val("TMAX") >= 35,
-                extreme_heat_threshold=35 if val("TMAX") is not None else None,
-                source_name="NOAA NCEI GHCN-Daily", source_record_id=f"{station.ncei_station_id}:{day}",
-                measurement_unit_metadata={"temperature": "C", "precipitation": "mm", "snowfall": "mm", "wind_speed": "m/s", "degree_day_base": "18.3 C", "extreme_heat_threshold": "35 C TMAX"},
-                quality_flags={key: item.get("qflag", "") for key, item in values.items()},
-            ))
-            loaded += 1
-        session.commit()
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [executor.submit(fetch, station) for station in stations.values()]
+        for completed, future in enumerate(as_completed(futures), start=1):
+            station_id, values = future.result()
+            rows = [row for row in annual_rows(station_id, values) if (row.weather_station_id, row.reporting_year) not in existing]
+            session.bulk_insert_mappings(
+                WeatherAnnualRecord,
+                [{key: value for key, value in row.__dict__.items() if not key.startswith("_")} for row in rows],
+            )
+            existing.update((row.weather_station_id, row.reporting_year) for row in rows)
+            loaded += len(rows)
+            if completed % 100 == 0:
+                session.commit()
+                print(f"NASA POWER annual weather: {completed}/{len(futures)} stations, {loaded} rows")
+    session.commit()
     return loaded
 
 
@@ -379,8 +326,9 @@ def main() -> None:
     parser.add_argument("--epa-api-key", default=os.getenv("EPA_API_KEY"), help="EPA API key; preferably supplied through EPA_API_KEY")
     parser.add_argument("--epa-years", default="2023", help="Comma-separated CAMPD years")
     parser.add_argument("--traci-file", type=Path)
-    parser.add_argument("--years", default="2023", help="Comma-separated NOAA years")
-    parser.add_argument("--noaa-weather", action="store_true")
+    parser.add_argument("--years", default="2023", help="Comma-separated NASA POWER years")
+    parser.add_argument("--nasa-weather", action="store_true")
+    parser.add_argument("--weather-workers", type=int, default=6)
     args = parser.parse_args()
     engine = create_engine(args.database_url, future=True)
     Base.metadata.create_all(engine)
@@ -392,10 +340,9 @@ def main() -> None:
             result = ingest_dataframe(session, pd.read_csv(io.BytesIO(content)) if args.epa_file.suffix.lower() == ".csv" else pd.read_excel(io.BytesIO(content)), filename=args.epa_file.name, source_name="EPA CAMPD", content=content, approve=True)
             print(f"EPA CAMPD: {result['status']} ({result['validation']['accepted_records']} records)")
         print(f"TRACI: {load_traci(session, args.traci_file.read_bytes() if args.traci_file else None)} factors")
-        print(f"NOAA stations: {load_noaa_stations(session)} inserted")
-        if args.noaa_weather:
+        if args.nasa_weather:
             years = [int(year.strip()) for year in args.years.split(",")]
-            print(f"NOAA weather: {load_noaa_facility_weather(session, years)} records")
+            print(f"NASA POWER weather: {load_nasa_power_annual_weather(session, years, args.weather_workers)} records")
         print(f"Indicators: {seed_indicators(session)} inserted")
 
 

@@ -1,6 +1,6 @@
 # epaData Database Schema
 
-This design uses SQLite with SQLAlchemy ORM. Integer surrogate keys are used for internal relationships; EPA, NOAA, and TRACI identifiers remain stored as source identifiers. Measurements are stored in their source units and are not silently converted during import.
+This design uses SQLite with SQLAlchemy ORM. Integer surrogate keys are used for internal relationships; EPA and TRACI identifiers remain stored as source identifiers. Measurements are stored in their source units and are not silently converted during import.
 
 ## Design decisions
 
@@ -9,9 +9,9 @@ This design uses SQLite with SQLAlchemy ORM. Integer surrogate keys are used for
 - A dataset is an import/retrieval snapshot, while `data_provenance` records how that snapshot was obtained.
 - Upload validation is auditable: rejected rows and validation errors are retained in `upload_validation_errors`; invalid rows are never silently discarded.
 - `traci_factors` is reference data and is joined during calculations. Factors are not copied into CAMPD observations.
-- A weather station is linked to a facility through `weather_facility_links`, which preserves the selection method, distance, and validity period.
-- NOAA/NCEI daily observations remain the raw weather source. CDD/HDD and extreme-heat flags are derived values stored with the observation only when their base temperature, threshold, and method are recorded.
-- Annual CAMPD data cannot prove a daily relationship with weather. This schema stays at annual CAMPD grain; NOAA weather remains station/day grain and is used for annual weather summaries.
+- A facility is linked to a reproducible climate point through `weather_facility_links`, which preserves the selected location, distance, and selection method.
+- NASA POWER monthly point data are summarized to climate-point/year grain. CDD/HDD totals and extreme-heat-day counts retain their base temperature and threshold metadata.
+- Annual CAMPD data cannot prove a daily relationship with weather. This schema stays at annual CAMPD grain and uses annual NASA POWER climate summaries for comparison.
 - Relationships described as correlations, associations, or relationships must not be presented as causal conclusions without a causal analysis.
 
 ## Entity-relationship diagram
@@ -67,10 +67,10 @@ erDiagram
 		string ncei_station_id UK
 		string station_name
 	}
-	WEATHER_RECORDS {
-		int weather_record_id PK
+	WEATHER_ANNUAL_RECORDS {
+		int weather_annual_record_id PK
 		int weather_station_id FK
-		date observation_date
+		int reporting_year
 		decimal average_temperature
 	}
 	WEATHER_FACILITY_LINKS {
@@ -124,7 +124,7 @@ erDiagram
 	UNITS ||--o{ ANNUAL_RECORDS : produces
 	UPLOADED_FILES ||--o{ UPLOAD_VALIDATION_ERRORS : records
 	UPLOADED_FILES ||--o{ DATA_PROVENANCE : describes
-	WEATHER_STATIONS ||--o{ WEATHER_RECORDS : observes
+	WEATHER_STATIONS ||--o{ WEATHER_ANNUAL_RECORDS : summarizes
 	FACILITIES ||--o{ WEATHER_FACILITY_LINKS : maps
 	WEATHER_STATIONS ||--o{ WEATHER_FACILITY_LINKS : selected_for
 	TRACI_FACTORS ||--o{ INDICATOR_DEFINITIONS : informs
@@ -156,7 +156,7 @@ erDiagram
 
 - `dataset_id`: `Integer`, non-null.
 - `dataset_name`: `String(200)`, non-null.
-- `data_source`: `String(100)`, non-null, e.g. `EPA CAMPD`, `NOAA NCEI`, `TRACI`.
+- `data_source`: `String(100)`, non-null, e.g. `EPA CAMPD`, `NASA POWER`, `TRACI`.
 - `reporting_year`: `Integer`, nullable when a dataset spans years; check `1900 <= value <= 2200` when present.
 - `retrieval_or_upload_date`: `DateTime(timezone=True)`, non-null.
 - `original_filename`: `String(255)`, nullable for API retrievals.
@@ -374,7 +374,7 @@ erDiagram
 
 ## 9. `weather_stations`
 
-**Purpose:** NOAA/NCEI station master data.
+**Purpose:** Reusable climate points used to associate facilities with annual NASA POWER summaries. The existing identifier columns retain the original station/point key for compatibility.
 
 **Primary key:** `weather_station_id` (`Integer`, non-null, identity).
 
@@ -389,7 +389,7 @@ erDiagram
 - `county`: `String(100)`, nullable.
 - `elevation_m`: `Numeric(12, 3)`, nullable.
 - `network`: `String(100)`, nullable.
-- `source_name`: `String(100)`, non-null, default `NOAA NCEI`.
+- `source_name`: `String(100)`, non-null; current annual climate rows use `NASA POWER`.
 - `active_from`: `Date`, nullable.
 - `active_to`: `Date`, nullable.
 
@@ -397,41 +397,33 @@ erDiagram
 
 **Indexes:** `ncei_station_id` (unique), `(state, county)`, `(latitude, longitude)`.
 
-**Relationships:** one-to-many with `weather_records` and `weather_facility_links`.
+**Relationships:** one-to-many with `weather_annual_records` and `weather_facility_links`.
 
-## 10. `weather_records`
+## 10. `weather_annual_records`
 
-**Purpose:** One daily observation for one weather station. Use source-specific quality flags rather than replacing missing values with zero.
+**Purpose:** One annual NASA POWER climate summary for one linked climate point. This is the active weather grain used by the project to retain annual temperature, precipitation, wind, degree-day, and extreme-heat metrics without storing daily observations.
 
-**Primary key:** `weather_record_id` (`Integer`, non-null, identity).
+**Primary key:** `weather_annual_record_id` (`Integer`, non-null, identity).
 
 **Columns:**
 
-- `weather_record_id`: `Integer`, non-null.
+- `weather_annual_record_id`: `Integer`, non-null.
 - `weather_station_id`: `Integer`, non-null, FK to `weather_stations.weather_station_id`.
-- `observation_date`: `Date`, non-null.
-- `average_temperature`: `Numeric(10, 3)`, nullable.
-- `maximum_temperature`: `Numeric(10, 3)`, nullable.
-- `minimum_temperature`: `Numeric(10, 3)`, nullable.
-- `precipitation`: `Numeric(12, 4)`, nullable.
-- `snowfall`: `Numeric(12, 4)`, nullable.
-- `wind_speed`: `Numeric(10, 3)`, nullable.
-- `relative_humidity`: `Numeric(8, 3)`, nullable.
-- `pressure`: `Numeric(12, 3)`, nullable.
-- `source_name`: `String(100)`, non-null, default `NOAA NCEI`.
-- `source_record_id`: `String(100)`, nullable.
-- `measurement_unit_metadata`: `JSON`, nullable.
-- `quality_flags`: `JSON`, nullable.
-- `cooling_degree_days`: `Numeric(10, 3)`, nullable; derived as `max(average_temperature - base_temperature, 0)` in the documented temperature unit.
-- `heating_degree_days`: `Numeric(10, 3)`, nullable; derived as `max(base_temperature - average_temperature, 0)` in the documented temperature unit.
-- `is_extreme_heat`: `Boolean`, nullable; threshold-based classification, not a causal claim.
-- `extreme_heat_threshold`: `Numeric(10, 3)`, nullable; the threshold used for the flag.
+- `reporting_year`: `Integer`, non-null.
+- `average_temperature`: `Numeric(10, 3)`, nullable; mean daily temperature in C.
+- `maximum_temperature`: `Numeric(10, 3)`, nullable; annual maximum daily temperature in C.
+- `minimum_temperature`: `Numeric(10, 3)`, nullable; annual minimum daily temperature in C.
+- `precipitation_total`: `Numeric(14, 4)`, nullable; annual total in mm.
+- `snowfall_total`: `Numeric(14, 4)`, nullable; annual total in mm.
+- `wind_speed_average`: `Numeric(10, 3)`, nullable; annual mean in m/s.
+- `cooling_degree_days`: `Numeric(12, 3)`, nullable; annual total using an 18.3 C base.
+- `heating_degree_days`: `Numeric(12, 3)`, nullable; annual total using an 18.3 C base.
+- `extreme_heat_days`: `Integer`, non-null; count of days with TMAX at or above 35 C.
+- `extreme_heat_threshold`: `Numeric(10, 3)`, nullable.
+- `source_name`: `String(100)`, non-null; `NASA POWER` for the active importer.
+- `measurement_unit_metadata`: `JSON`, nullable; includes source coordinates, units, resolution, and degree-day base.
 
-**Foreign keys:** `weather_station_id -> weather_stations.weather_station_id`.
-
-**Unique constraints:** `uq_weather_station_date` on `(weather_station_id, observation_date)`. If multiple products are loaded for the same day, include `source_name` or a separate product/version key.
-
-**Indexes:** `(weather_station_id, observation_date)`, `observation_date`.
+**Unique constraints:** `uq_weather_station_year` on `(weather_station_id, reporting_year)`.
 
 **Relationships:** many-to-one with `weather_stations`.
 
@@ -553,7 +545,7 @@ Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx p
 - `Dataset.annual_records`, `Dataset.uploaded_files`, `Dataset.provenance`
 - `Facility.units`, `Facility.weather_links`
 - `Unit.annual_records`
-- `WeatherStation.records`, `WeatherStation.facility_links`
+- `WeatherStation.records`, `WeatherStation.annual_records`, `WeatherStation.facility_links`
 - `UploadedFile.validation_errors`
 - `IndicatorDefinition.calculated_indicators`, `WeightScenario.weights`, `WeightScenario.score_results`
 
@@ -566,31 +558,31 @@ Use `relationship(..., cascade="all, delete-orphan")` only for owned child recor
 Use four small layers:
 
 1. **Raw intake and provenance:** `uploaded_files`, `upload_validation_errors`, `datasets`, and `data_provenance`.
-2. **Normalized observations:** `facilities`, `units`, `annual_records`, `weather_stations`, and `weather_records`.
+2. **Normalized observations:** `facilities`, `units`, `annual_records`, `weather_stations`, and `weather_annual_records`.
 3. **Reference and derived evaluation:** `traci_factors`, `indicator_definitions`, and `calculated_indicators`.
 4. **Scenario evaluation:** `weight_scenarios`, `scenario_weights`, and `score_results`.
 
 Pandas should handle file parsing and validation. SQLAlchemy should handle transactional imports and application queries. Keep uploaded files outside SQLite and store only a controlled `storage_reference`, SHA-256 hash, and metadata in the database.
 
-### 2. Recommended NOAA/NCEI product
+### 2. Recommended climate product
 
-Use **NOAA NCEI Global Historical Climatology Network-Daily (GHCN-Daily)** for the first weather implementation. It is practical for a course project because it provides station-based daily summaries, long historical coverage, station identifiers, quality flags, and common temperature and precipitation fields. Store source units and convert to a project display unit only in the analysis layer.
+Use **NASA POWER monthly point data** for the active climate implementation. It provides 1981-present monthly meteorological time series at facility coordinates, including temperature, precipitation, and wind, and avoids one request per weather station file. Store source units and convert to a project display unit only in the analysis layer.
 
-For each import, record the GHCN station ID, product/version details, retrieval URL or API parameters, retrieval date, and quality flags. Do not mix station products in one `(station, date)` row unless the source product is included in the uniqueness key.
+For each import, record the NASA POWER endpoint, requested parameters, point coordinates, retrieval date, source resolution, and conversion metadata. Annual summaries use the `(weather_station_id, reporting_year)` key for compatibility with the existing facility-link model.
 
 ### 3. Complete entity/relationship overview
 
 ```text
 datasets 1---* annual_records *---1 units *---1 facilities
 	|                |                 |
-	|                |                 +---* weather_facility_links *---1 weather_stations 1---* weather_records
+	|                |                 +---* weather_facility_links *---1 weather_stations 1---* weather_annual_records
 	|                |
 	|
 	+---* uploaded_files 1---* upload_validation_errors
 	+---* data_provenance
 
 traci_factors 1---* indicator_definitions 1---* calculated_indicators
-calculated_indicators optionally reference facility, unit, dataset, annual_record, or daily_power_record
+calculated_indicators optionally reference facility, unit, dataset, annual_record, or weather summary
 weight_scenarios 1---* scenario_weights *---1 indicator_definitions
 weight_scenarios 1---* score_results
 ```
@@ -601,7 +593,7 @@ The complete table-by-table specification is in sections 1-16 above. The executa
 
 ### 5. Primary keys and foreign keys
 
-Each table has an integer surrogate primary key. External identifiers remain separately constrained: EPA facility IDs are unique in `facilities`, EPA unit IDs are unique within a facility, NOAA station IDs are unique in `weather_stations`, and uploaded content hashes can prevent duplicate imports. Foreign keys preserve the chain from annual observations and weather observations to units, facilities, datasets, and provenance.
+Each table has an integer surrogate primary key. External identifiers remain separately constrained: EPA facility IDs are unique in `facilities`, EPA unit IDs are unique within a facility, climate point IDs are unique in `weather_stations`, and uploaded content hashes can prevent duplicate imports. Foreign keys preserve the chain from annual observations and climate summaries to units, facilities, datasets, and provenance.
 
 ### 6. Unique constraints
 
@@ -611,7 +603,7 @@ The important business keys are:
 - `(units.facility_id, units.epa_unit_id)`
 - `(annual_records.unit_id, reporting_year, dataset_id)`
 - `weather_stations.ncei_station_id`
-- `(weather_records.weather_station_id, observation_date)`
+- `(weather_annual_records.weather_station_id, reporting_year)`
 - `(weather_facility_links.facility_id, weather_station_id, valid_from, valid_to)`
 - `(indicator_definitions.indicator_name, version)`
 - `(scenario_weights.weight_scenario_id, indicator_definition_id)`
@@ -628,25 +620,25 @@ For SQLite, ordinary B-tree indexes support equality and range filters such as `
 
 - CAMPD observations provide facility/unit operating and emissions measures.
 - `weather_facility_links` selects one or more reproducible nearby stations for a facility.
-- Weather records are summarized separately by facility/year for comparison with annual CAMPD.
+- `weather_annual_records` provides station/year summaries for comparison with annual CAMPD.
 - TRACI factors remain versioned reference data. An indicator definition selects the relevant factor, and a calculation applies it to pollutant quantities. Factors are not duplicated into annual, daily, or weather rows.
 - All weather findings should be reported as associations or correlations unless a separate causal design is performed.
 
-### 9. Annual versus daily data handling
+### 9. Annual climate data handling
 
-Keep `annual_records` at unit/year grain and `weather_records` at station/day grain. For annual comparisons, aggregate weather in a query or a calculated indicator by facility/year: mean temperature, maximum temperature, total precipitation, total CDD, total HDD, and count of extreme-heat days. For monthly comparisons, use the same query pattern grouped by `strftime('%Y-%m', observation_date)`.
+Keep `annual_records` and `weather_annual_records` at year grain. Join annual weather through the primary station in `weather_facility_links` and compare mean temperature, maximum temperature, total precipitation, total CDD, total HDD, and extreme-heat-day counts by facility/year.
 
-Do not copy one annual emissions row into 365 weather rows. The current model keeps CAMPD at annual grain, so daily weather is summarized for annual comparisons. `calculated_indicators` may cache a monthly or annual aggregate when it is expensive or repeatedly displayed, with its formula and source dataset IDs in `calculation_parameters`.
+`weather_annual_records` is populated from NASA POWER monthly values, and `calculated_indicators` may cache a further annual aggregate when it is expensive or repeatedly displayed.
 
 ### 10. CDD, HDD, and extreme heat
 
-Store raw temperature observations first. Calculate CDD and HDD from those observations using an explicitly documented base temperature, normally 65 F (18.3 C), and preserve the base temperature and units in `measurement_unit_metadata` or calculation parameters. Store the derived daily values in `weather_records` when the same convention is used across the project; this is a useful, non-duplicative cache.
+Calculate CDD and HDD from NASA POWER monthly mean temperatures using an explicitly documented base temperature, normally 65 F (18.3 C), weighting the monthly values to an annual equivalent. Store annual totals in `weather_annual_records` with the base temperature, source resolution, and units in `measurement_unit_metadata`.
 
-Extreme heat should be a derived classification, not a raw NOAA fact. Store `is_extreme_heat` and `extreme_heat_threshold` only when the threshold is known. A percentile threshold by station and reference period is preferable for cross-climate comparisons; a fixed threshold is simpler for Phase 2. The selected method and reference period belong in `calculation_parameters`.
+Extreme heat should be a derived classification, not a raw source fact. Store `extreme_heat_days` and `extreme_heat_threshold` only when the threshold is known. A percentile threshold by point and reference period is preferable for cross-climate comparisons; a fixed threshold is simpler for Phase 2.
 
 ### 11. SQLAlchemy model code
 
-The complete declarative model implementation is [models.py](models.py). It defines `Base`, all 17 entities, typed relationships, `ForeignKey`, `UniqueConstraint`, `CheckConstraint`, and `Index` declarations, plus `initialize_database()` for a course-project bootstrap.
+The complete declarative model implementation is [models.py](models.py). It defines `Base`, all 16 entities, typed relationships, `ForeignKey`, `UniqueConstraint`, `CheckConstraint`, and `Index` declarations, plus `initialize_database()` for a course-project bootstrap.
 
 ### 12. Example queries
 
@@ -691,7 +683,7 @@ fuel_totals = (
 
 ```
 
-For annual CAMPD plus weather, aggregate `WeatherRecord` by station and calendar year first, then join the result to `AnnualRecord.reporting_year` through the facility. Compare groups with explicit sample sizes and missing-data rules. Calculate CO2/MWh only when the denominator is present and nonzero; never replace a missing or zero gross load with an arbitrary value.
+For annual CAMPD plus climate, join `WeatherAnnualRecord` to `AnnualRecord.reporting_year` through the facility's primary climate-point link. Compare groups with explicit sample sizes and missing-data rules. Calculate CO2/MWh only when the denominator is present and nonzero; never replace a missing or zero gross load with an arbitrary value.
 
 ### 13. Recommended database initialization and Week 2 steps
 
@@ -719,5 +711,5 @@ Recommended Week 2 sequence:
 3. Implement CSV/XLSX extension and file-size checks, pandas loading, required-column checks, type/domain checks, null checks, and duplicate-key checks.
 4. Persist an upload preview and `upload_validation_errors`; require approval before inserting accepted facilities, units, and annual records.
 5. Add indexed facility/unit/year/fuel/emissions search and CSV download.
-6. Import a small GHCN-Daily sample, calculate CDD/HDD with documented units, create station links, and test an annual weather summary.
+6. Import a small NASA POWER sample, calculate CDD/HDD with documented units, create climate-point links, and test an annual climate summary.
 7. Add pytest coverage for rejected rows, duplicate prevention, rollback on failed import, range filters, and the annual weather aggregation boundary.
