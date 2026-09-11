@@ -19,51 +19,104 @@ The diagram below is the maintained relationship overview for the schema. It use
 
 ```mermaid
 erDiagram
-	DATASETS {
+	datasets {
 		int dataset_id PK
+		string dataset_name
 		string data_source
 		int reporting_year
+		datetime retrieval_or_upload_date
+		string original_filename
+		int number_of_raw_records
+		int number_of_accepted_records
+		int number_of_rejected_records
 		string status
+		text notes
 	}
-	FACILITIES {
+	facilities {
 		int facility_id PK
 		string epa_facility_id UK
 		string facility_name
 		string state
+		string county
 		float latitude
 		float longitude
+		string source_category
+		datetime created_at
+		datetime updated_at
 	}
-	UNITS {
+	units {
 		int unit_id PK
 		int facility_id FK
 		string epa_unit_id
+		string unit_type
 		string primary_fuel
+		string secondary_fuel
+		date operating_date
+		date retirement_date
+		datetime created_at
+		datetime updated_at
 	}
-	ANNUAL_RECORDS {
+	annual_records {
 		int annual_record_id PK
 		int unit_id FK
 		int dataset_id FK
 		int reporting_year
+		decimal operating_time
+		decimal gross_load
+		decimal steam_load
+		decimal heat_input
+		decimal co2_mass
+		decimal so2_mass
+		decimal nox_mass
+		string so2_control_information
+		string nox_control_information
+		string pm_control_information
+		string program_code
+		int source_row_number
+		datetime created_at
 	}
-	UPLOADED_FILES {
+	uploaded_files {
 		int uploaded_file_id PK
 		int dataset_id FK
+		string original_filename
+		string storage_reference
+		string file_type
+		bigint file_size_bytes
 		string content_sha256 UK
+		datetime upload_date
 		string validation_status
+		int number_of_records
+		int number_of_accepted_records
+		int number_of_rejected_records
+		json validation_summary
+		text notes
 	}
-	UPLOAD_VALIDATION_ERRORS {
+	upload_validation_errors {
 		int validation_error_id PK
 		int uploaded_file_id FK
 		int source_row_number
+		string column_name
 		string error_code
+		text error_message
+		text raw_value
+		json raw_row_json
+		datetime created_at
 	}
-	DATA_PROVENANCE {
+	data_provenance {
 		int provenance_id PK
 		int dataset_id FK
 		int uploaded_file_id FK
+		string source_name
+		text source_url_or_api
 		string retrieval_method
+		datetime retrieval_date
+		json query_parameters
+		int reporting_year
+		string source_version
+		string checksum
+		text notes
 	}
-	WEATHER_ANNUAL_RECORDS {
+	weather_annual_records {
 		int weather_annual_record_id PK
 		int facility_id FK
 		int reporting_year
@@ -71,7 +124,6 @@ erDiagram
 		decimal maximum_temperature
 		decimal minimum_temperature
 		decimal precipitation_total
-		decimal snowfall_total
 		decimal wind_speed_average
 		decimal cooling_degree_days
 		decimal heating_degree_days
@@ -80,37 +132,63 @@ erDiagram
 		string source_name
 		json measurement_unit_metadata
 	}
-	TRACI_FACTORS {
+	traci_factors {
 		int traci_factor_id PK
 		string pollutant
 		string impact_category
+		decimal characterization_factor
+		string factor_unit
+		string reference_flow_unit
 		string traci_version
+		string source_name
+		text source_url
+		string geography
+		date valid_from
+		date valid_to
+		text notes
 	}
-	INDICATOR_DEFINITIONS {
+	indicator_definitions {
 		int indicator_definition_id PK
-		int traci_factor_id FK
 		string indicator_name
+		text description
+		string impact_category
+		text formula_expression
+		string output_unit
+		int traci_factor_id FK
 		string version
+		boolean is_active
 	}
-	CALCULATED_INDICATORS {
+	calculated_indicators {
 		int calculated_indicator_id PK
 		int indicator_definition_id FK
 		int facility_id FK
 		int unit_id FK
 		int dataset_id FK
 		int annual_record_id FK
+		string period_grain
+		date period_start
+		date period_end
+		decimal value
+		string output_unit
+		datetime calculation_date
+		json calculation_parameters
 	}
-	WEIGHT_SCENARIOS {
+	weight_scenarios {
 		int weight_scenario_id PK
 		string scenario_name UK
+		text description
+		datetime created_at
+		string created_by
+		boolean is_active
 	}
-	SCENARIO_WEIGHTS {
+	scenario_weights {
 		int scenario_weight_id PK
 		int weight_scenario_id FK
 		int indicator_definition_id FK
 		decimal weight
+		string normalization_method
 	}
-	SCORE_RESULTS {
+	score_results {
 		int score_result_id PK
 		int weight_scenario_id FK
 		int facility_id FK
@@ -118,30 +196,32 @@ erDiagram
 		int reporting_year
 		date observation_date
 		decimal score
+		datetime calculated_at
+		json calculation_parameters
 	}
 
-	DATASETS ||--o{ ANNUAL_RECORDS : contains
-	DATASETS o|--o{ UPLOADED_FILES : groups
-	DATASETS ||--o{ DATA_PROVENANCE : documents
-	FACILITIES ||--o{ UNITS : owns
-	UNITS ||--o{ ANNUAL_RECORDS : produces
-	UPLOADED_FILES ||--o{ UPLOAD_VALIDATION_ERRORS : records
-	UPLOADED_FILES o|--o{ DATA_PROVENANCE : describes
-	FACILITIES ||--o{ WEATHER_ANNUAL_RECORDS : has_climate_summary
-	TRACI_FACTORS o|--o{ INDICATOR_DEFINITIONS : informs
-	INDICATOR_DEFINITIONS ||--o{ CALCULATED_INDICATORS : defines
-	FACILITIES o|--o{ CALCULATED_INDICATORS : subject_of
-	UNITS o|--o{ CALCULATED_INDICATORS : subject_of
-	DATASETS o|--o{ CALCULATED_INDICATORS : source_of
-	ANNUAL_RECORDS o|--o{ CALCULATED_INDICATORS : source_of
-	WEIGHT_SCENARIOS ||--o{ SCENARIO_WEIGHTS : assigns
-	INDICATOR_DEFINITIONS ||--o{ SCENARIO_WEIGHTS : weighted_by
-	WEIGHT_SCENARIOS ||--o{ SCORE_RESULTS : produces
-	FACILITIES o|--o{ SCORE_RESULTS : scored
-	UNITS o|--o{ SCORE_RESULTS : scored
+	facilities ||--o{ units : owns
+	units ||--o{ annual_records : produces
+	datasets ||--o{ annual_records : contains
+	datasets o|--o{ uploaded_files : groups
+	uploaded_files ||--o{ upload_validation_errors : records
+	datasets ||--o{ data_provenance : documents
+	uploaded_files o|--o{ data_provenance : describes
+	facilities ||--o{ weather_annual_records : has_climate_summary
+	traci_factors o|--o{ indicator_definitions : informs
+	indicator_definitions ||--o{ calculated_indicators : defines
+	facilities o|--o{ calculated_indicators : subject_of
+	units o|--o{ calculated_indicators : subject_of
+	datasets o|--o{ calculated_indicators : source_of
+	annual_records o|--o{ calculated_indicators : source_of
+	weight_scenarios ||--o{ scenario_weights : assigns
+	indicator_definitions ||--o{ scenario_weights : weighted_by
+	weight_scenarios ||--o{ score_results : produces
+	facilities o|--o{ score_results : scored
+	units o|--o{ score_results : scored
 ```
 
-`o|--o{` marks an optional foreign-key relationship used by polymorphic-style result rows: a calculated indicator or score result may target a facility, unit, or source record depending on its grain. `||--o{` marks a required parent for each child row.
+Entity names match the SQLite / SQLAlchemy table names. `annual_records` holds unit/year operating and emissions metrics (`operating_time`, `gross_load`, `steam_load`, `heat_input`, `co2_mass`, `so2_mass`, `nox_mass`) plus control and program fields. `o|--o{` marks an optional foreign-key relationship used by polymorphic-style result rows: a calculated indicator or score result may target a facility, unit, or source record depending on its grain. `||--o{` marks a required parent for each child row.
 
 ## SQLAlchemy conventions
 
@@ -215,7 +295,7 @@ erDiagram
 - `primary_fuel`: `String(100)`, nullable.
 - `secondary_fuel`: `String(100)`, nullable.
 - `operating_date`: `Date`, nullable.
-- `retirement_date`: `Date`, nullable.
+- `retirement_date`: `Date`, nullable. CAMPD facility attributes do not publish a retirement/end date (only `commercialOperationDate` and `operatingStatus`), so this column remains unused unless another source supplies it.
 - `created_at`: `DateTime(timezone=True)`, non-null.
 - `updated_at`: `DateTime(timezone=True)`, non-null.
 
@@ -388,7 +468,6 @@ erDiagram
 - `maximum_temperature`: `Numeric(10, 3)`, nullable; annual maximum daily temperature in C.
 - `minimum_temperature`: `Numeric(10, 3)`, nullable; annual minimum daily temperature in C.
 - `precipitation_total`: `Numeric(14, 4)`, nullable; annual total in mm.
-- `snowfall_total`: `Numeric(14, 4)`, nullable; annual total in mm.
 - `wind_speed_average`: `Numeric(10, 3)`, nullable; annual mean in m/s.
 - `cooling_degree_days`: `Numeric(12, 3)`, nullable; annual total using an 18.3 C base.
 - `heating_degree_days`: `Numeric(12, 3)`, nullable; annual total using an 18.3 C base.
@@ -519,17 +598,25 @@ For each import, record the NASA POWER endpoint, requested parameters, facility 
 ### 3. Complete entity/relationship overview
 
 ```text
-datasets 1---* annual_records *---1 units *---1 facilities
-	|                |                 +---* weather_annual_records
-	|                |
-	|
-	+---* uploaded_files 1---* upload_validation_errors
-	+---* data_provenance
+facilities 1---* units 1---* annual_records *---1 datasets
+    |                              |
+    +---* weather_annual_records   +---* uploaded_files 1---* upload_validation_errors
+    |                              +---* data_provenance
+    |
+    +---o calculated_indicators / score_results (optional subjects)
 
-traci_factors 1---* indicator_definitions 1---* calculated_indicators
-calculated_indicators optionally reference facility, unit, dataset, annual_record, or weather summary
-weight_scenarios 1---* scenario_weights *---1 indicator_definitions
-weight_scenarios 1---* score_results
+annual_records metrics:
+  operating_time, gross_load, steam_load, heat_input,
+  co2_mass, so2_mass, nox_mass,
+  so2_control_information, nox_control_information, pm_control_information,
+  program_code
+
+units attributes:
+  unit_type, primary_fuel, secondary_fuel, operating_date, retirement_date
+
+traci_factors o---* indicator_definitions 1---* calculated_indicators
+indicator_definitions 1---* scenario_weights *---1 weight_scenarios 1---* score_results
+calculated_indicators optionally reference facility, unit, dataset, and/or annual_record
 ```
 
 ### 4. Complete table-by-table schema
@@ -563,7 +650,7 @@ For SQLite, ordinary B-tree indexes support equality and range filters such as `
 
 - CAMPD observations provide facility/unit operating and emissions measures.
 - `weather_annual_records` provides facility/year NASA POWER summaries for comparison with annual CAMPD.
-- TRACI factors remain versioned reference data. An indicator definition selects the relevant factor, and a calculation applies it to pollutant quantities. Factors are not duplicated into annual, daily, or weather rows.
+- TRACI factors remain versioned reference data. An indicator definition selects the relevant factor, and a calculation applies it to pollutant quantities. Factors are not duplicated into annual or weather rows.
 - All weather findings should be reported as associations or correlations unless a separate causal design is performed.
 
 ### 9. Annual climate data handling

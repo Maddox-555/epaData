@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -134,11 +135,12 @@ def create_app(database_url: str | None = None) -> Flask:
         if not url:
             return jsonify({"error": "JSON field 'url' is required"}), 400
         try:
-            frame, content = retrieve_dataframe(url, params=payload.get("params"))
+            params = payload.get("params") or {}
+            frame, content = retrieve_dataframe(url, params=params)
             approve = bool(payload.get("approve", False))
             filename = payload.get("filename") or Path(url.split("?")[0]).name or "retrieved.csv"
             with SessionLocal() as session:
-                result = ingest_dataframe(session, frame, filename=filename, source_name=payload.get("source_name", "EPA CAMPD retrieval"), approve=approve, storage_dir=app.config["UPLOAD_FOLDER"], source_url_or_api=url)
+                result = ingest_dataframe(session, frame, filename=filename, source_name=payload.get("source_name", "EPA CAMPD retrieval"), approve=approve, storage_dir=app.config["UPLOAD_FOLDER"], source_url_or_api=url, query_parameters=payload.get("provenance_params", params))
             return jsonify(result)
         except Exception as exc:
             app.logger.exception("Remote retrieval failed")
@@ -147,6 +149,13 @@ def create_app(database_url: str | None = None) -> Flask:
     @app.post("/api/data/retrieve/epa-campd")
     def retrieve_epa_campd() -> Any:
         payload = request.get_json(silent=True) or {}
+        api_key = os.getenv("EPA_API_KEY")
+        if not api_key:
+            return jsonify({"error": "EPA_API_KEY is not configured on the server."}), 503
+        params = dict(payload.get("params") or {})
+        payload["provenance_params"] = dict(params)
+        params["api_key"] = api_key
+        payload["params"] = params
         payload.setdefault("source_name", SOURCE_DEFINITIONS["epa-campd"]["name"])
         with app.test_request_context("/api/data/retrieve", method="POST", json=payload):
             return retrieve_data()

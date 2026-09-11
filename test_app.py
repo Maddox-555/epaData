@@ -73,7 +73,9 @@ def test_epa_campd_retrieval_records_source_url(client, monkeypatch):
         "unit_id": "U1", "reporting_year": 2022,
     }])
     source_url = "https://example.test/campd.csv"
-    monkeypatch.setattr(app_module, "retrieve_dataframe", lambda url, params=None: (frame, b"source"))
+    captured = {}
+    monkeypatch.setenv("EPA_API_KEY", "test-server-key")
+    monkeypatch.setattr(app_module, "retrieve_dataframe", lambda url, params=None: (captured.update({"params": params}) or (frame, b"source")))
 
     response = client.post("/api/data/retrieve/epa-campd", json={"url": source_url, "approve": True})
 
@@ -82,3 +84,6 @@ def test_epa_campd_retrieval_records_source_url(client, monkeypatch):
     with client.application.extensions["epa_sessionmaker"]() as session:
         provenance = session.execute(text("SELECT source_url_or_api FROM data_provenance")).scalar_one()
         assert provenance == source_url
+        query_parameters = session.execute(text("SELECT query_parameters FROM data_provenance")).scalar_one()
+        assert "test-server-key" not in query_parameters
+    assert captured["params"]["api_key"] == "test-server-key"

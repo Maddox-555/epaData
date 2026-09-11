@@ -6,7 +6,7 @@ import hashlib
 import io
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +38,7 @@ SOURCE_DEFINITIONS = {
     },
     "nasa-power": {
         "name": "NASA POWER",
-        "description": "Monthly point climate data summarized to annual facility climate records.",
+        "description": "Monthly regional climate data summarized to annual facility climate records.",
         "default_endpoint": "https://power.larc.nasa.gov/api/temporal/monthly/regional",
         "supported_import": False,
     },
@@ -57,25 +57,26 @@ COLUMN_ALIASES = {
     "county": ["county", "county name"],
     "latitude": ["latitude", "lat"],
     "longitude": ["longitude", "lon", "long"],
-    "source_category": ["source category", "source_category"],
+    "source_category": ["source category", "source_category", "sourceCategory"],
     "unit_id": ["epa unit id", "epa_unit_id", "unit id", "unit_id", "unitid"],
     "unit_type": ["unit type", "unit_type"],
-    "primary_fuel": ["primary fuel", "primary_fuel"],
-    "secondary_fuel": ["secondary fuel", "secondary_fuel"],
-    "operating_date": ["operating date", "operating_date"],
+    "primary_fuel": ["primary fuel", "primary_fuel", "primaryFuelInfo"],
+    "secondary_fuel": ["secondary fuel", "secondary_fuel", "secondaryFuelInfo"],
+    "operating_date": ["operating date", "operating_date", "commercialOperationDate"],
+    # Keep the column for schema compatibility; CAMPD attributes do not publish a retirement date.
     "retirement_date": ["retirement date", "retirement_date"],
     "reporting_year": ["reporting year", "reporting_year", "year"],
-    "operating_time": ["operating time", "operating_time"],
+    "operating_time": ["operating time", "operating_time", "sumOpTime"],
     "gross_load": ["gross load", "gross_load"],
     "steam_load": ["steam load", "steam_load"],
     "heat_input": ["heat input", "heat_input"],
     "co2_mass": ["co2 mass", "co2_mass", "co2"],
     "so2_mass": ["so2 mass", "so2_mass", "so2"],
     "nox_mass": ["nox mass", "nox_mass", "nox"],
-    "so2_control_information": ["so2 control information", "so2 control", "so2_control_information"],
-    "nox_control_information": ["nox control information", "nox control", "nox_control_information"],
-    "pm_control_information": ["pm control information", "pm control", "pm_control_information"],
-    "program_code": ["program code", "program_code"],
+    "so2_control_information": ["so2 control information", "so2 control", "so2_control_information", "so2ControlInfo"],
+    "nox_control_information": ["nox control information", "nox control", "nox_control_information", "noxControlInfo"],
+    "pm_control_information": ["pm control information", "pm control", "pm_control_information", "pmControlInfo"],
+    "program_code": ["program code", "program_code", "programCodeInfo"],
 }
 REQUIRED_COLUMNS = {"facility_id", "facility_name", "state", "unit_id", "reporting_year"}
 NUMERIC_COLUMNS = {
@@ -171,6 +172,18 @@ def _value(row: pd.Series, column: str, default: Any = None) -> Any:
     return default if pd.isna(value) else value
 
 
+def _date_value(row: pd.Series, column: str) -> date | None:
+    value = _value(row, column)
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    parsed = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
 def import_accepted_rows(session: Session, accepted: pd.DataFrame, dataset: Dataset) -> int:
     facilities: dict[str, Facility] = {}
     units: dict[tuple[str, str], Unit] = {}
@@ -187,22 +200,73 @@ def import_accepted_rows(session: Session, accepted: pd.DataFrame, dataset: Data
             )
             session.add(facility)
             session.flush()
+        else:
+            for attribute in ("facility_name", "state", "county", "latitude", "longitude", "source_category"):
+                value = _value(row, attribute)
+                if value is not None:
+                    setattr(facility, attribute, value)
+            facility.updated_at = datetime.now(timezone.utc)
         facilities[facility_key] = facility
         unit_key = (facility_key, str(_value(row, "unit_id")))
         unit = units.get(unit_key) or session.scalar(select(Unit).where(Unit.facility_id == facility.facility_id, Unit.epa_unit_id == unit_key[1]))
         if unit is None:
-            unit = Unit(facility_id=facility.facility_id, epa_unit_id=unit_key[1], unit_type=_value(row, "unit_type"), primary_fuel=_value(row, "primary_fuel"), secondary_fuel=_value(row, "secondary_fuel"), operating_date=_value(row, "operating_date"), retirement_date=_value(row, "retirement_date"), created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
+            unit = Unit(facility_id=facility.facility_id, epa_unit_id=unit_key[1], unit_type=_value(row, "unit_type"), primary_fuel=_value(row, "primary_fuel"), secondary_fuel=_value(row, "secondary_fuel"), operating_date=_date_value(row, "operating_date"), retirement_date=_date_value(row, "retirement_date"), created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
             session.add(unit)
             session.flush()
+        else:
+            for attribute in ("unit_type", "primary_fuel", "secondary_fuel", "operating_date", "retirement_date"):
+                value = _date_value(row, attribute) if attribute in {"operating_date", "retirement_date"} else _value(row, attribute)
+                if value is not None:
+                    setattr(unit, attribute, value)
+            unit.updated_at = datetime.now(timezone.utc)
         units[unit_key] = unit
-        session.add(AnnualRecord(unit_id=unit.unit_id, dataset_id=dataset.dataset_id, reporting_year=int(row["reporting_year"]), operating_time=_value(row, "operating_time"), gross_load=_value(row, "gross_load"), steam_load=_value(row, "steam_load"), heat_input=_value(row, "heat_input"), co2_mass=_value(row, "co2_mass"), so2_mass=_value(row, "so2_mass"), nox_mass=_value(row, "nox_mass"), so2_control_information=_value(row, "so2_control_information"), nox_control_information=_value(row, "nox_control_information"), pm_control_information=_value(row, "pm_control_information"), program_code=_value(row, "program_code"), created_at=datetime.now(timezone.utc)))
+        year = int(row["reporting_year"])
+        annual_fields = {
+            "operating_time": _value(row, "operating_time"),
+            "gross_load": _value(row, "gross_load"),
+            "steam_load": _value(row, "steam_load"),
+            "heat_input": _value(row, "heat_input"),
+            "co2_mass": _value(row, "co2_mass"),
+            "so2_mass": _value(row, "so2_mass"),
+            "nox_mass": _value(row, "nox_mass"),
+            "so2_control_information": _value(row, "so2_control_information"),
+            "nox_control_information": _value(row, "nox_control_information"),
+            "pm_control_information": _value(row, "pm_control_information"),
+            "program_code": _value(row, "program_code"),
+        }
+        existing_records = session.scalars(
+            select(AnnualRecord).where(
+                AnnualRecord.unit_id == unit.unit_id,
+                AnnualRecord.reporting_year == year,
+            )
+        ).all()
+        if existing_records:
+            for record in existing_records:
+                for attribute, value in annual_fields.items():
+                    if value is not None:
+                        setattr(record, attribute, value)
+        else:
+            session.add(AnnualRecord(
+                unit_id=unit.unit_id,
+                dataset_id=dataset.dataset_id,
+                reporting_year=year,
+                created_at=datetime.now(timezone.utc),
+                **annual_fields,
+            ))
     return len(accepted)
 
 
-def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, source_name: str, content: bytes | None = None, approve: bool = False, storage_dir: str = "instance/uploads", source_url_or_api: str | None = None) -> dict[str, Any]:
+def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, source_name: str, content: bytes | None = None, approve: bool = False, storage_dir: str = "instance/uploads", source_url_or_api: str | None = None, query_parameters: dict[str, Any] | None = None) -> dict[str, Any]:
     accepted, errors, report = validate_dataframe(frame)
     now = datetime.now(timezone.utc)
-    dataset = Dataset(dataset_name=filename, data_source=source_name, reporting_year=None, retrieval_or_upload_date=now, original_filename=filename, number_of_raw_records=report["raw_records"], number_of_accepted_records=report["accepted_records"] if approve else 0, number_of_rejected_records=report["rejected_records"], status="pending")
+    requested_year = (query_parameters or {}).get("reporting_year", (query_parameters or {}).get("year"))
+    if isinstance(requested_year, list):
+        requested_year = requested_year[0] if len(requested_year) == 1 else None
+    try:
+        requested_year = int(requested_year) if requested_year is not None else None
+    except (TypeError, ValueError):
+        requested_year = None
+    dataset = Dataset(dataset_name=filename, data_source=source_name, reporting_year=requested_year, retrieval_or_upload_date=now, original_filename=filename, number_of_raw_records=report["raw_records"], number_of_accepted_records=report["accepted_records"] if approve else 0, number_of_rejected_records=report["rejected_records"], status="pending")
     session.add(dataset)
     session.flush()
     if content is not None:
@@ -220,7 +284,7 @@ def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, so
         dataset.status = "imported"
     elif approve:
         dataset.status = "failed"
-    session.add(DataProvenance(dataset_id=dataset.dataset_id, source_name=source_name, retrieval_method="user_upload" if content is not None else "remote_url", retrieval_date=now, source_url_or_api=source_url_or_api if content is None else None))
+    session.add(DataProvenance(dataset_id=dataset.dataset_id, source_name=source_name, retrieval_method="user_upload" if content is not None else "remote_url", retrieval_date=now, source_url_or_api=source_url_or_api if content is None else None, query_parameters=query_parameters))
     session.commit()
     return {"dataset_id": dataset.dataset_id, "status": dataset.status, "validation": report, "errors": errors}
 

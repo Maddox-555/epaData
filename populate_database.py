@@ -33,8 +33,11 @@ from models import (
 
 NASA_POWER_MONTHLY_URL = "https://power.larc.nasa.gov/api/temporal/monthly/regional"
 TRACI_URL = "https://www.epa.gov/system/files/documents/2024-01/traci_2_2.xlsx"
-EPA_FACILITIES_URL = "https://api.epa.gov/easey/facilities-mgmt/facilities/attributes"
-EPA_ANNUAL_EMISSIONS_URL = "https://api.epa.gov/easey/emissions-mgmt/emissions/apportioned/annual"
+EPA_API_ROOT = os.getenv("EPA_API_ROOT", "https://api.epa.gov/easey").rstrip("/")
+EPA_API_ENV = os.getenv("EPA_API_ENV", "").strip("/")
+EPA_API_PREFIX = f"{EPA_API_ROOT}/{EPA_API_ENV}" if EPA_API_ENV else EPA_API_ROOT
+EPA_FACILITIES_URL = f"{EPA_API_PREFIX}/facilities-mgmt/facilities/attributes"
+EPA_ANNUAL_EMISSIONS_URL = f"{EPA_API_PREFIX}/emissions-mgmt/emissions/apportioned/annual"
 
 
 def _download(url: str, headers: dict[str, str] | None = None) -> bytes:
@@ -73,7 +76,14 @@ def _epa_pages(url: str, api_key: str, params: dict[str, Any]) -> list[dict[str,
     records: list[dict[str, Any]] = []
     page = 1
     while True:
-        response = requests.get(url, params={**params, "api_key": api_key, "page": page, "perPage": 500}, timeout=120)
+        request_params = {**params, "api_key": api_key, "page": page, "perPage": 500}
+        for attempt in range(5):
+            response = requests.get(url, params=request_params, timeout=120)
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                break
+            retry_after = response.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
+            time.sleep(min(delay, 30))
         if response.status_code >= 400:
             try:
                 message = response.json().get("error", {}).get("message", response.text)
@@ -138,21 +148,29 @@ def load_campd_api(session: Session, api_key: str, years: list[int]) -> int:
             "longitude": _campd_column(joined, "longitude", "facilityLongitude"),
             "unit_id": joined["unit_id"],
             "unit_type": _campd_column(joined, "unitType", "unit_type"),
-            "primary_fuel": _campd_column(joined, "unitFuelType", "primaryFuel", "primary_fuel"),
-            "secondary_fuel": _campd_column(joined, "secondaryFuel", "secondary_fuel"),
+            "source_category": _campd_column(joined, "sourceCategory", "source_category"),
+            "primary_fuel": _campd_column(joined, "primaryFuelInfo", "unitFuelType", "primaryFuel", "primary_fuel"),
+            "secondary_fuel": _campd_column(joined, "secondaryFuelInfo", "secondaryFuel", "secondary_fuel"),
+            "operating_date": _campd_column(joined, "commercialOperationDate", "operatingDate", "operating_date"),
+            # CAMPD FacilityAttributesDTO has commercialOperationDate and operatingStatus,
+            # but no retirement/end date field, so leave retirement_date unset.
             "reporting_year": year,
-            "operating_time": _campd_column(joined, "operatingTime", "operating_time"),
+            "operating_time": _campd_column(joined, "sumOpTime", "operatingTime", "operating_time"),
             "gross_load": _campd_column(joined, "grossLoad", "gross_load"),
             "steam_load": _campd_column(joined, "steamLoad", "steam_load"),
             "heat_input": _campd_column(joined, "heatInput", "heat_input"),
             "co2_mass": _campd_column(joined, "co2Mass", "co2_mass", "co2"),
             "so2_mass": _campd_column(joined, "so2Mass", "so2_mass", "so2"),
             "nox_mass": _campd_column(joined, "noxMass", "nox_mass", "nox"),
-            "program_code": _campd_column(joined, "programCode", "program_code"),
+            "so2_control_information": _campd_column(joined, "so2ControlInfo", "so2ControlInformation", "so2_control_information"),
+            "nox_control_information": _campd_column(joined, "noxControlInfo", "noxControlInformation", "nox_control_information"),
+            "pm_control_information": _campd_column(joined, "pmControlInfo", "pmControlInformation", "pm_control_information"),
+            "program_code": _campd_column(joined, "programCodeInfo", "programCode", "program_code"),
         })
         result = ingest_dataframe(
             session, output, filename=f"campd-{year}.json", source_name="EPA CAMPD",
             approve=True, source_url_or_api=f"{EPA_ANNUAL_EMISSIONS_URL}?year={year}",
+            query_parameters={"year": year, "reporting_year": year},
         )
         total += result["validation"]["accepted_records"]
         print(f"EPA CAMPD {year}: {result['status']} ({result['validation']['accepted_records']} records)")
@@ -317,7 +335,6 @@ def load_nasa_power_annual_weather(session: Session, years: list[int], workers: 
                 maximum_temperature=max(maximums) if maximums else None,
                 minimum_temperature=min(minimums) if minimums else None,
                 precipitation_total=sum(value * 365 / 12 for value in precipitation) if precipitation else None,
-                snowfall_total=None,
                 wind_speed_average=sum(winds) / len(winds) if winds else None,
                 cooling_degree_days=cdd * 365 / 12,
                 heating_degree_days=hdd * 365 / 12,

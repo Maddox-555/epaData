@@ -264,7 +264,6 @@ class WeatherAnnualRecord(Base):
     maximum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     minimum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     precipitation_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
-    snowfall_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
     wind_speed_average: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     cooling_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     heating_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
