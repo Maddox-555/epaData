@@ -13,7 +13,7 @@ from flask import Flask, jsonify, request, send_file
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from data_service import build_annual_query, ingest_dataframe, read_dataframe, retrieve_dataframe
+from data_service import SOURCE_DEFINITIONS, build_annual_query, ingest_dataframe, read_dataframe, retrieve_dataframe
 from models import AnnualRecord, Base, Dataset, Facility, Unit
 
 
@@ -69,6 +69,7 @@ def create_app(database_url: str | None = None) -> Flask:
             "message": "EPA data backend is running. Use the API endpoints below.",
             "endpoints": {
                 "health": "/api/health",
+                "sources": "/api/sources",
                 "datasets": "/api/datasets",
                 "facilities": "/api/facilities",
                 "annual_records": "/api/annual-records",
@@ -85,6 +86,10 @@ def create_app(database_url: str | None = None) -> Flask:
     @app.get("/api/health")
     def health() -> Any:
         return jsonify({"status": "ok", "service": "epaData"})
+
+    @app.get("/api/sources")
+    def sources() -> Any:
+        return jsonify(SOURCE_DEFINITIONS)
 
     @app.get("/api/datasets")
     def datasets() -> Any:
@@ -133,11 +138,18 @@ def create_app(database_url: str | None = None) -> Flask:
             approve = bool(payload.get("approve", False))
             filename = payload.get("filename") or Path(url.split("?")[0]).name or "retrieved.csv"
             with SessionLocal() as session:
-                result = ingest_dataframe(session, frame, filename=filename, source_name=payload.get("source_name", "EPA CAMPD retrieval"), approve=approve, storage_dir=app.config["UPLOAD_FOLDER"])
+                result = ingest_dataframe(session, frame, filename=filename, source_name=payload.get("source_name", "EPA CAMPD retrieval"), approve=approve, storage_dir=app.config["UPLOAD_FOLDER"], source_url_or_api=url)
             return jsonify(result)
         except Exception as exc:
             app.logger.exception("Remote retrieval failed")
             return jsonify({"error": "Remote data could not be retrieved", "detail": str(exc)}), 502
+
+    @app.post("/api/data/retrieve/epa-campd")
+    def retrieve_epa_campd() -> Any:
+        payload = request.get_json(silent=True) or {}
+        payload.setdefault("source_name", SOURCE_DEFINITIONS["epa-campd"]["name"])
+        with app.test_request_context("/api/data/retrieve", method="POST", json=payload):
+            return retrieve_data()
 
     @app.get("/api/annual-records")
     def annual_records() -> Any:

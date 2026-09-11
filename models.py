@@ -56,7 +56,6 @@ class Dataset(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
     annual_records: Mapped[list[AnnualRecord]] = relationship(back_populates="dataset")
-    daily_power_records: Mapped[list[DailyPowerRecord]] = relationship(back_populates="dataset")
     uploaded_files: Mapped[list[UploadedFile]] = relationship(back_populates="dataset")
     provenance: Mapped[list[DataProvenance]] = relationship(back_populates="dataset")
     calculated_indicators: Mapped[list[CalculatedIndicator]] = relationship(back_populates="dataset")
@@ -109,7 +108,6 @@ class Unit(Base):
 
     facility: Mapped[Facility] = relationship(back_populates="units")
     annual_records: Mapped[list[AnnualRecord]] = relationship(back_populates="unit")
-    daily_power_records: Mapped[list[DailyPowerRecord]] = relationship(back_populates="unit")
     calculated_indicators: Mapped[list[CalculatedIndicator]] = relationship(back_populates="unit")
     score_results: Mapped[list[ScoreResult]] = relationship(back_populates="unit")
 
@@ -336,32 +334,6 @@ class WeatherFacilityLink(Base):
     weather_station: Mapped[WeatherStation] = relationship(back_populates="facility_links")
 
 
-class DailyPowerRecord(Base):
-    __tablename__ = "daily_power_records"
-    __table_args__ = (
-        UniqueConstraint("unit_id", "observation_date", "dataset_id", name="uq_daily_unit_date_dataset"),
-        Index("ix_daily_power_unit_date", "unit_id", "observation_date"),
-        Index("ix_daily_power_dataset_date", "dataset_id", "observation_date"),
-        Index("ix_daily_power_co2", "co2_mass"),
-    )
-
-    daily_record_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    unit_id: Mapped[int] = mapped_column(ForeignKey("units.unit_id", ondelete="RESTRICT"), nullable=False)
-    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.dataset_id", ondelete="RESTRICT"), nullable=False)
-    observation_date: Mapped[date] = mapped_column(Date, nullable=False)
-    operating_time: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    gross_load: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    heat_input: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    co2_mass: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    so2_mass: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    nox_mass: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    source_row_number: Mapped[int | None] = mapped_column(Integer)
-
-    unit: Mapped[Unit] = relationship(back_populates="daily_power_records")
-    dataset: Mapped[Dataset] = relationship(back_populates="daily_power_records")
-    calculated_indicators: Mapped[list[CalculatedIndicator]] = relationship(back_populates="daily_record")
-
-
 class IndicatorDefinition(Base):
     __tablename__ = "indicator_definitions"
     __table_args__ = (
@@ -389,7 +361,7 @@ class CalculatedIndicator(Base):
     __tablename__ = "calculated_indicators"
     __table_args__ = (
         CheckConstraint(
-            "annual_record_id IS NOT NULL OR daily_record_id IS NOT NULL OR facility_id IS NOT NULL OR unit_id IS NOT NULL",
+            "annual_record_id IS NOT NULL OR facility_id IS NOT NULL OR unit_id IS NOT NULL",
             name="ck_indicator_has_subject",
         ),
         CheckConstraint("period_end >= period_start", name="ck_indicator_period_order"),
@@ -405,7 +377,6 @@ class CalculatedIndicator(Base):
     unit_id: Mapped[int | None] = mapped_column(ForeignKey("units.unit_id", ondelete="RESTRICT"))
     dataset_id: Mapped[int | None] = mapped_column(ForeignKey("datasets.dataset_id", ondelete="RESTRICT"))
     annual_record_id: Mapped[int | None] = mapped_column(ForeignKey("annual_records.annual_record_id", ondelete="RESTRICT"))
-    daily_record_id: Mapped[int | None] = mapped_column(ForeignKey("daily_power_records.daily_record_id", ondelete="RESTRICT"))
     period_grain: Mapped[str] = mapped_column(String(30), nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
@@ -419,7 +390,6 @@ class CalculatedIndicator(Base):
     unit: Mapped[Unit | None] = relationship(back_populates="calculated_indicators")
     dataset: Mapped[Dataset | None] = relationship(back_populates="calculated_indicators")
     annual_record: Mapped[AnnualRecord | None] = relationship(back_populates="calculated_indicators")
-    daily_record: Mapped[DailyPowerRecord | None] = relationship(back_populates="calculated_indicators")
 
 
 class WeightScenario(Base):

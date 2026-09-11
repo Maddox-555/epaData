@@ -1,7 +1,10 @@
 from io import BytesIO
 
 import pytest
+import pandas as pd
+from sqlalchemy import text
 
+import app as app_module
 from app import create_app
 
 
@@ -54,3 +57,28 @@ def test_health_endpoint(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json["status"] == "ok"
+
+
+def test_sources_endpoint_describes_supported_original_sources(client):
+    response = client.get("/api/sources")
+
+    assert response.status_code == 200
+    assert response.json["epa-campd"]["supported_import"] is True
+    assert response.json["noaa-ghcn-daily"]["default_endpoint"].startswith("https://")
+
+
+def test_epa_campd_retrieval_records_source_url(client, monkeypatch):
+    frame = pd.DataFrame([{
+        "facility_id": "100", "facility_name": "Test Plant", "state": "OH",
+        "unit_id": "U1", "reporting_year": 2022,
+    }])
+    source_url = "https://example.test/campd.csv"
+    monkeypatch.setattr(app_module, "retrieve_dataframe", lambda url, params=None: (frame, b"source"))
+
+    response = client.post("/api/data/retrieve/epa-campd", json={"url": source_url, "approve": True})
+
+    assert response.status_code == 200
+    assert response.json["status"] == "imported"
+    with client.application.extensions["epa_sessionmaker"]() as session:
+        provenance = session.execute(text("SELECT source_url_or_api FROM data_provenance")).scalar_one()
+        assert provenance == source_url

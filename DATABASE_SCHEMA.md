@@ -11,7 +11,7 @@ This design uses SQLite with SQLAlchemy ORM. Integer surrogate keys are used for
 - `traci_factors` is reference data and is joined during calculations. Factors are not copied into CAMPD observations.
 - A weather station is linked to a facility through `weather_facility_links`, which preserves the selection method, distance, and validity period.
 - NOAA/NCEI daily observations remain the raw weather source. CDD/HDD and extreme-heat flags are derived values stored with the observation only when their base temperature, threshold, and method are recorded.
-- Annual CAMPD data cannot prove a daily relationship with weather. The optional `daily_power_records` table is the normalized extension for date-level association analysis.
+- Annual CAMPD data cannot prove a daily relationship with weather. This schema stays at annual CAMPD grain; NOAA weather remains station/day grain and is used for annual weather summaries.
 - Relationships described as correlations, associations, or relationships must not be presented as causal conclusions without a causal analysis.
 
 ## Entity-relationship diagram
@@ -43,12 +43,6 @@ erDiagram
 		int unit_id FK
 		int dataset_id FK
 		int reporting_year
-	}
-	DAILY_POWER_RECORDS {
-		int daily_record_id PK
-		int unit_id FK
-		int dataset_id FK
-		date observation_date
 	}
 	UPLOADED_FILES {
 		int uploaded_file_id PK
@@ -104,7 +98,6 @@ erDiagram
 		int unit_id FK
 		int dataset_id FK
 		int annual_record_id FK
-		int daily_record_id FK
 	}
 	WEIGHT_SCENARIOS {
 		int weight_scenario_id PK
@@ -125,12 +118,10 @@ erDiagram
 	}
 
 	DATASETS ||--o{ ANNUAL_RECORDS : contains
-	DATASETS ||--o{ DAILY_POWER_RECORDS : contains
 	DATASETS ||--o{ UPLOADED_FILES : groups
 	DATASETS ||--o{ DATA_PROVENANCE : documents
 	FACILITIES ||--o{ UNITS : owns
 	UNITS ||--o{ ANNUAL_RECORDS : produces
-	UNITS ||--o{ DAILY_POWER_RECORDS : produces
 	UPLOADED_FILES ||--o{ UPLOAD_VALIDATION_ERRORS : records
 	UPLOADED_FILES ||--o{ DATA_PROVENANCE : describes
 	WEATHER_STATIONS ||--o{ WEATHER_RECORDS : observes
@@ -142,7 +133,6 @@ erDiagram
 	UNITS o|--o{ CALCULATED_INDICATORS : subject_of
 	DATASETS o|--o{ CALCULATED_INDICATORS : source_of
 	ANNUAL_RECORDS o|--o{ CALCULATED_INDICATORS : source_of
-	DAILY_POWER_RECORDS o|--o{ CALCULATED_INDICATORS : source_of
 	WEIGHT_SCENARIOS ||--o{ SCENARIO_WEIGHTS : assigns
 	INDICATOR_DEFINITIONS ||--o{ SCENARIO_WEIGHTS : weighted_by
 	WEIGHT_SCENARIOS ||--o{ SCORE_RESULTS : produces
@@ -207,7 +197,7 @@ erDiagram
 
 **Indexes:** `epa_facility_id` (unique), `(state, county)`, `facility_name`.
 
-**Relationships:** one-to-many with `units` and `weather_facility_links`; optionally one-to-many with `daily_power_records` through units.
+**Relationships:** one-to-many with `units` and `weather_facility_links`.
 
 ## 3. `units`
 
@@ -232,7 +222,7 @@ erDiagram
 
 **Indexes:** `(facility_id, epa_unit_id)` (unique), `unit_type`, `primary_fuel`.
 
-**Relationships:** many-to-one with `facilities`; one-to-many with `annual_records` and `daily_power_records`.
+**Relationships:** many-to-one with `facilities`; one-to-many with `annual_records`.
 
 ## 4. `annual_records`
 
@@ -473,35 +463,7 @@ erDiagram
 
 **Relationships:** many-to-one with `facilities` and `weather_stations`. This table is appropriate because the nearest station can change, multiple stations can be retained, and the analysis must be reproducible.
 
-## 12. `daily_power_records` (recommended extension)
-
-**Purpose:** Date-level CAMPD generation/emissions observations needed for weather association analysis. It must not be fabricated by splitting annual totals across days.
-
-**Primary key:** `daily_record_id` (`Integer`, non-null, identity).
-
-**Columns:**
-
-- `daily_record_id`: `Integer`, non-null.
-- `unit_id`: `Integer`, non-null, FK to `units.unit_id`.
-- `dataset_id`: `Integer`, non-null, FK to `datasets.dataset_id`.
-- `observation_date`: `Date`, non-null.
-- `operating_time`: `Numeric(20, 6)`, nullable.
-- `gross_load`: `Numeric(20, 6)`, nullable.
-- `heat_input`: `Numeric(20, 6)`, nullable.
-- `co2_mass`: `Numeric(20, 6)`, nullable.
-- `so2_mass`: `Numeric(20, 6)`, nullable.
-- `nox_mass`: `Numeric(20, 6)`, nullable.
-- `source_row_number`: `Integer`, nullable.
-
-**Foreign keys:** `unit_id -> units.unit_id`; `dataset_id -> datasets.dataset_id`.
-
-**Unique constraints:** `uq_daily_unit_date_dataset` on `(unit_id, observation_date, dataset_id)`.
-
-**Indexes:** `(unit_id, observation_date)`, `(dataset_id, observation_date)`.
-
-**Relationships:** many-to-one with `units` and `datasets`; joins to weather through `units -> facilities -> weather_facility_links -> weather_records`.
-
-## 13. `indicator_definitions`
+## 12. `indicator_definitions`
 
 **Purpose:** Definitions of calculated environmental indicators, including formula and units.
 
@@ -515,25 +477,25 @@ erDiagram
 
 **Relationships:** optionally references `traci_factors`; one-to-many with `calculated_indicators` and `score_results`.
 
-## 14. `calculated_indicators`
+## 13. `calculated_indicators`
 
 **Purpose:** Persist calculated indicator values and the exact source records used.
 
 **Primary key:** `calculated_indicator_id` (`Integer`, non-null, identity).
 
-**Columns:** `calculated_indicator_id` (`Integer`, non-null), `indicator_definition_id` (`Integer`, non-null, FK), `annual_record_id` (`Integer`, nullable, FK), `daily_record_id` (`Integer`, nullable, FK), `calculation_date` (`DateTime(timezone=True)`, non-null), `value` (`Numeric(30, 12)`, non-null), `output_unit` (`String(100)`, non-null), `calculation_parameters` (`JSON`, nullable).
+**Columns:** `calculated_indicator_id` (`Integer`, non-null), `indicator_definition_id` (`Integer`, non-null, FK), `annual_record_id` (`Integer`, nullable, FK), `calculation_date` (`DateTime(timezone=True)`, non-null), `value` (`Numeric(30, 12)`, non-null), `output_unit` (`String(100)`, non-null), `calculation_parameters` (`JSON`, nullable).
 
 The implementation also includes nullable `facility_id`, `unit_id`, and `dataset_id` foreign keys, plus `period_grain`, `period_start`, and `period_end`. These fields allow an indicator to represent a unit-level annual value, a facility-level monthly aggregate, or a weather summary without copying source observations.
 
 Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx per MWh`, TRACI global-warming/acidification/eutrophication/smog impacts, `average temperature`, `CDD`, `HDD`, `extreme heat day count`, `coal generation share`, and `natural gas generation share`.
 
-**Constraints:** at least one source or subject (`annual_record_id`, `daily_record_id`, `facility_id`, or `unit_id`) must be non-null; `period_end >= period_start`. Keep the calculation formula, input units, base temperature, extreme-heat threshold, and source dataset IDs in `calculation_parameters`.
+**Constraints:** at least one source or subject (`annual_record_id`, `facility_id`, or `unit_id`) must be non-null; `period_end >= period_start`. Keep the calculation formula, input units, base temperature, extreme-heat threshold, and source dataset IDs in `calculation_parameters`.
 
-**Indexes:** `(indicator_definition_id, calculation_date)`, `annual_record_id`, `daily_record_id`.
+**Indexes:** `(indicator_definition_id, calculation_date)`, `annual_record_id`.
 
 **Relationships:** many-to-one with `indicator_definitions` and one source observation.
 
-## 15. `weight_scenarios`
+## 14. `weight_scenarios`
 
 **Purpose:** Named weighting scenarios for combining normalized indicators.
 
@@ -547,7 +509,7 @@ Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx p
 
 **Relationships:** one-to-many with `scenario_weights` and `score_results`.
 
-## 16. `scenario_weights`
+## 15. `scenario_weights`
 
 **Purpose:** The weight assigned to each indicator in a scenario.
 
@@ -561,7 +523,7 @@ Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx p
 
 **Relationships:** many-to-one with `weight_scenarios` and `indicator_definitions`.
 
-## 17. `score_results`
+## 16. `score_results`
 
 **Purpose:** Persist a score produced by a weighting scenario for an explicit subject and period.
 
@@ -583,14 +545,14 @@ Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx p
 4. Require explicit approval. On cancellation, keep metadata and validation errors but import no observations.
 5. Upsert normalized facilities and units, then insert accepted observations into `annual_records` inside one transaction.
 6. Mark the dataset and upload `imported` only after the transaction succeeds.
-7. For weather analysis, select a reproducible primary station through `weather_facility_links`. Join daily power observations by date to weather records. Use annual records only for annual aggregation or annual weather summaries; never infer daily emissions from annual totals.
+7. For weather analysis, select a reproducible primary station through `weather_facility_links`. Use annual records for annual aggregation or annual weather summaries; never infer daily emissions from annual totals.
 8. Download results as CSV from explicit queries, including dataset/provenance identifiers and units.
 
 ## Recommended SQLAlchemy relationship summary
 
 - `Dataset.annual_records`, `Dataset.uploaded_files`, `Dataset.provenance`
 - `Facility.units`, `Facility.weather_links`
-- `Unit.annual_records`, `Unit.daily_power_records`
+- `Unit.annual_records`
 - `WeatherStation.records`, `WeatherStation.facility_links`
 - `UploadedFile.validation_errors`
 - `IndicatorDefinition.calculated_indicators`, `WeightScenario.weights`, `WeightScenario.score_results`
@@ -604,7 +566,7 @@ Use `relationship(..., cascade="all, delete-orphan")` only for owned child recor
 Use four small layers:
 
 1. **Raw intake and provenance:** `uploaded_files`, `upload_validation_errors`, `datasets`, and `data_provenance`.
-2. **Normalized observations:** `facilities`, `units`, `annual_records`, `weather_stations`, `weather_records`, and optional `daily_power_records`.
+2. **Normalized observations:** `facilities`, `units`, `annual_records`, `weather_stations`, and `weather_records`.
 3. **Reference and derived evaluation:** `traci_factors`, `indicator_definitions`, and `calculated_indicators`.
 4. **Scenario evaluation:** `weight_scenarios`, `scenario_weights`, and `score_results`.
 
@@ -623,7 +585,6 @@ datasets 1---* annual_records *---1 units *---1 facilities
 	|                |                 |
 	|                |                 +---* weather_facility_links *---1 weather_stations 1---* weather_records
 	|                |
-	|                +---* daily_power_records
 	|
 	+---* uploaded_files 1---* upload_validation_errors
 	+---* data_provenance
@@ -636,11 +597,11 @@ weight_scenarios 1---* score_results
 
 ### 4. Complete table-by-table schema
 
-The complete table-by-table specification is in sections 1-17 above. The executable SQLAlchemy version is [models.py](models.py). It uses the same table names, columns, foreign keys, constraints, relationships, and indexes.
+The complete table-by-table specification is in sections 1-16 above. The executable SQLAlchemy version is [models.py](models.py). It uses the same table names, columns, foreign keys, constraints, relationships, and indexes.
 
 ### 5. Primary keys and foreign keys
 
-Each table has an integer surrogate primary key. External identifiers remain separately constrained: EPA facility IDs are unique in `facilities`, EPA unit IDs are unique within a facility, NOAA station IDs are unique in `weather_stations`, and uploaded content hashes can prevent duplicate imports. Foreign keys preserve the chain from annual or daily observations to units, facilities, datasets, and provenance.
+Each table has an integer surrogate primary key. External identifiers remain separately constrained: EPA facility IDs are unique in `facilities`, EPA unit IDs are unique within a facility, NOAA station IDs are unique in `weather_stations`, and uploaded content hashes can prevent duplicate imports. Foreign keys preserve the chain from annual observations and weather observations to units, facilities, datasets, and provenance.
 
 ### 6. Unique constraints
 
@@ -649,7 +610,6 @@ The important business keys are:
 - `facilities.epa_facility_id`
 - `(units.facility_id, units.epa_unit_id)`
 - `(annual_records.unit_id, reporting_year, dataset_id)`
-- `(daily_power_records.unit_id, observation_date, dataset_id)`
 - `weather_stations.ncei_station_id`
 - `(weather_records.weather_station_id, observation_date)`
 - `(weather_facility_links.facility_id, weather_station_id, valid_from, valid_to)`
@@ -668,7 +628,7 @@ For SQLite, ordinary B-tree indexes support equality and range filters such as `
 
 - CAMPD observations provide facility/unit operating and emissions measures.
 - `weather_facility_links` selects one or more reproducible nearby stations for a facility.
-- Weather records join to daily power observations by station and date. For annual CAMPD, weather is summarized separately by facility/year.
+- Weather records are summarized separately by facility/year for comparison with annual CAMPD.
 - TRACI factors remain versioned reference data. An indicator definition selects the relevant factor, and a calculation applies it to pollutant quantities. Factors are not duplicated into annual, daily, or weather rows.
 - All weather findings should be reported as associations or correlations unless a separate causal design is performed.
 
@@ -676,7 +636,7 @@ For SQLite, ordinary B-tree indexes support equality and range filters such as `
 
 Keep `annual_records` at unit/year grain and `weather_records` at station/day grain. For annual comparisons, aggregate weather in a query or a calculated indicator by facility/year: mean temperature, maximum temperature, total precipitation, total CDD, total HDD, and count of extreme-heat days. For monthly comparisons, use the same query pattern grouped by `strftime('%Y-%m', observation_date)`.
 
-Do not copy one annual emissions row into 365 weather rows. If a real daily CAMPD product is available, load it into `daily_power_records`; otherwise, daily weather can be explored descriptively but cannot be paired with daily emissions. `calculated_indicators` may cache a monthly or annual aggregate when it is expensive or repeatedly displayed, with its formula and source dataset IDs in `calculation_parameters`.
+Do not copy one annual emissions row into 365 weather rows. The current model keeps CAMPD at annual grain, so daily weather is summarized for annual comparisons. `calculated_indicators` may cache a monthly or annual aggregate when it is expensive or repeatedly displayed, with its formula and source dataset IDs in `calculation_parameters`.
 
 ### 10. CDD, HDD, and extreme heat
 
@@ -729,20 +689,6 @@ fuel_totals = (
 	.order_by(desc("load_total"))
 )
 
-# Weather-filtered daily association, when daily power data exists.
-weather_query = (
-	select(DailyPowerRecord, WeatherRecord, Facility)
-	.join(DailyPowerRecord.unit)
-	.join(Unit.facility)
-	.join(Facility.weather_links)
-	.join(WeatherFacilityLink.weather_station)
-	.join(WeatherStation.records)
-	.where(
-		WeatherFacilityLink.is_primary.is_(True),
-		WeatherRecord.observation_date == DailyPowerRecord.observation_date,
-		WeatherRecord.is_extreme_heat.is_(True),
-	)
-)
 ```
 
 For annual CAMPD plus weather, aggregate `WeatherRecord` by station and calendar year first, then join the result to `AnnualRecord.reporting_year` through the facility. Compare groups with explicit sample sizes and missing-data rules. Calculate CO2/MWh only when the denominator is present and nonzero; never replace a missing or zero gross load with an arbitrary value.

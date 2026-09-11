@@ -29,6 +29,27 @@ from models import (
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
+SOURCE_DEFINITIONS = {
+    "epa-campd": {
+        "name": "EPA CAMPD",
+        "description": "EPA Clean Air Markets Division annual emissions and generation data.",
+        "default_endpoint": "https://api.epa.gov/easey/campd/services/",
+        "supported_import": True,
+    },
+    "noaa-ghcn-daily": {
+        "name": "NOAA NCEI GHCN-Daily",
+        "description": "NOAA daily weather observations for facility and weather analysis.",
+        "default_endpoint": "https://www.ncei.noaa.gov/cdo-web/api/v2/data",
+        "supported_import": False,
+    },
+    "traci": {
+        "name": "TRACI",
+        "description": "Versioned EPA TRACI characterization factors for impact calculations.",
+        "default_endpoint": None,
+        "supported_import": False,
+    },
+}
+
 COLUMN_ALIASES = {
     "facility_id": ["epa facility id", "epa_facility_id", "facility id", "facility_id", "facilityid"],
     "facility_name": ["facility name", "facility_name", "facilityname"],
@@ -178,7 +199,7 @@ def import_accepted_rows(session: Session, accepted: pd.DataFrame, dataset: Data
     return len(accepted)
 
 
-def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, source_name: str, content: bytes | None = None, approve: bool = False, storage_dir: str = "instance/uploads") -> dict[str, Any]:
+def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, source_name: str, content: bytes | None = None, approve: bool = False, storage_dir: str = "instance/uploads", source_url_or_api: str | None = None) -> dict[str, Any]:
     accepted, errors, report = validate_dataframe(frame)
     now = datetime.now(timezone.utc)
     dataset = Dataset(dataset_name=filename, data_source=source_name, reporting_year=None, retrieval_or_upload_date=now, original_filename=filename, number_of_raw_records=report["raw_records"], number_of_accepted_records=report["accepted_records"] if approve else 0, number_of_rejected_records=report["rejected_records"], status="pending")
@@ -199,7 +220,7 @@ def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, so
         dataset.status = "imported"
     elif approve:
         dataset.status = "failed"
-    session.add(DataProvenance(dataset_id=dataset.dataset_id, source_name=source_name, retrieval_method="user_upload" if content is not None else "remote_url", retrieval_date=now, source_url_or_api=filename if content is None else None))
+    session.add(DataProvenance(dataset_id=dataset.dataset_id, source_name=source_name, retrieval_method="user_upload" if content is not None else "remote_url", retrieval_date=now, source_url_or_api=source_url_or_api if content is None else None))
     session.commit()
     return {"dataset_id": dataset.dataset_id, "status": dataset.status, "validation": report, "errors": errors}
 
