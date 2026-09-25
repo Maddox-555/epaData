@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>epaData – Environmental Data Platform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='C:\Users\chadw\Downloads\epaData\styles.css') }}">
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">epaData</div>
+    <nav class="nav">
+      <button data-view="home">Home</button>
+      <button data-view="retrieval">EPA Retrieval</button>
+      <button data-view="upload">Upload</button>
+      <button data-view="explorer">Explorer</button>
+      <button data-view="datasets">Datasets</button>
+    </nav>
+  </header>
+
+  <main class="container">
+
+    <!-- HOME -->
+    <section id="view-home" class="view active">
+      <div class="hero">
+        <h1>EPA Data Management, Evaluation & Visualization</h1>
+        <p class="subtitle">
+          A unified platform for retrieving, validating, storing, exploring, and downloading environmental data from EPA CAMPD and related sources.
+        </p>
+        <div class="hero-actions">
+          <button class="primary" data-view-target="explorer">Open Data Explorer</button>
+          <button class="secondary" data-view-target="upload">Upload Data</button>
+        </div>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <h2>Phase 1 Goals</h2>
+          <p>Data retrieval, upload, validation, storage, search, display, and download.</p>
+        </div>
+        <div class="card">
+          <h2>Data Sources</h2>
+          <ul>
+            <li>EPA CAMPD</li>
+            <li>EPA TRACI</li>
+            <li>User-uploaded datasets</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>Core Functions</h2>
+          <ul>
+            <li>Environmental-data retrieval</li>
+            <li>File upload & validation</li>
+            <li>Database storage & provenance</li>
+            <li>Search, filtering, ranking</li>
+            <li>CSV export</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- RETRIEVAL -->
+    <section id="view-retrieval" class="view">
+      <div class="panel">
+        <h1>EPA CAMPD Retrieval</h1>
+        <p class="panel-desc">Retrieve environmental records directly from EPA CAMPD using server-side API calls.</p>
+
+        <form id="retrieval-form" class="form-grid">
+          <div class="form-field">
+            <label>Reporting Year</label>
+            <input name="reporting_year" type="number">
+          </div>
+          <div class="form-field">
+            <label>State</label>
+            <input name="state" type="text">
+          </div>
+          <div class="form-field">
+            <label>Primary Fuel</label>
+            <input name="primary_fuel" type="text">
+          </div>
+          <div class="form-field">
+            <label>Unit Type</label>
+            <input name="unit_type" type="text">
+          </div>
+
+          <button class="primary full" type="submit">Retrieve from CAMPD</button>
+        </form>
+
+        <div id="retrieval-status" class="status"></div>
+      </div>
+    </section>
+
+    <!-- UPLOAD -->
+    <section id="view-upload" class="view">
+      <div class="panel">
+        <h1>Upload Data</h1>
+        <p class="panel-desc">Upload CSV or Excel files. The system validates schema, detects missing values, and reports data quality.</p>
+
+        <form id="upload-form" enctype="multipart/form-data">
+          <div class="form-field">
+            <label>Select File</label>
+            <input id="file" name="file" type="file" accept=".csv,.xlsx">
+          </div>
+
+          <button class="primary full" type="submit">Upload & Validate</button>
+        </form>
+
+        <div id="upload-status" class="status"></div>
+      </div>
+    </section>
+
+    <!-- EXPLORER -->
+    <section id="view-explorer" class="view">
+      <div class="panel">
+        <h1>Data Explorer</h1>
+        <p class="panel-desc">Search annual records using facility, unit, fuel, controls, and emissions filters.</p>
+
+        <form id="search-form" class="form-grid">
+          <div class="form-field"><label>Facility ID</label><input name="facility_id"></div>
+          <div class="form-field"><label>Facility Name</label><input name="facility_name"></div>
+          <div class="form-field"><label>Unit ID</label><input name="unit_id"></div>
+          <div class="form-field"><label>State</label><input name="state"></div>
+          <div class="form-field"><label>County</label><input name="county"></div>
+          <div class="form-field"><label>Reporting Year</label><input name="reporting_year" type="number"></div>
+          <div class="form-field"><label>Primary Fuel</label><input name="primary_fuel"></div>
+          <div class="form-field"><label>Secondary Fuel</label><input name="secondary_fuel"></div>
+          <div class="form-field"><label>Unit Type</label><input name="unit_type"></div>
+          <div class="form-field"><label>SO₂ Control</label><input name="so2_control_information"></div>
+          <div class="form-field"><label>NOx Control</label><input name="nox_control_information"></div>
+          <div class="form-field"><label>PM Control</label><input name="pm_control_information"></div>
+
+          <div class="form-field"><label>CO₂ Min</label><input name="co2_mass_min" type="number"></div>
+          <div class="form-field"><label>CO₂ Max</label><input name="co2_mass_max" type="number"></div>
+
+          <div class="form-actions">
+            <button class="primary" type="submit">Search</button>
+            <button class="secondary" id="clear-filters">Clear</button>
+            <button class="primary" id="download-csv">Download CSV</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Search Results</h2>
+        <div id="results-count" class="results-count">0 results</div>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Facility</th>
+              <th>Unit</th>
+              <th>State</th>
+              <th>Year</th>
+              <th>CO₂</th>
+              <th>SO₂</th>
+              <th>NOx</th>
+            </tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- DATASETS -->
+    <section id="view-datasets" class="view">
+      <div class="panel">
+        <h1>Datasets</h1>
+        <p class="panel-desc">Imported and retrieved datasets with provenance and record counts.</p>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Source</th>
+              <th>Year</th>
+              <th>Status</th>
+              <th>Raw</th>
+              <th>Accepted</th>
+              <th>Rejected</th>
+            </tr>
+          </thead>
+          <tbody id="datasets-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    epaData • Phase 1
+  </footer>
+
+  <script src="{{ url_for('static', filename='C:\Users\chadw\Downloads\epaData\app.js') }}"></script>
+</body>
+</html>
