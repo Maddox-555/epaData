@@ -53,6 +53,47 @@ def test_approved_upload_is_searchable_and_downloadable(client):
     assert client.get("/api/annual-records.csv").headers["Content-Type"] == "text/csv; charset=utf-8"
 
 
+def test_search_filters_ranges_sorting_and_pagination(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Primary Fuel,NOx Control,CO2 Mass,SO2 Mass\n"
+        b"100,Big River Plant,KY,U1,2024,Coal,Selective Catalytic Reduction,900000,400\n"
+        b"100,Big River Plant,KY,U2,2024,Coal,,600000,900\n"
+        b"200,Gas Station,KY,G1,2024,Pipeline Natural Gas,,300000,1\n"
+        b"300,Ohio Coal Works,OH,C1,2024,Coal,,800000,50\n"
+        b"100,Big River Plant,KY,U1,2023,Coal,Selective Catalytic Reduction,850000,420\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+
+    def search(query: str) -> dict:
+        response = client.get(f"/api/annual-records?{query}")
+        assert response.status_code == 200, response.json
+        return response.json
+
+    result = search("state=ky&reporting_year=2024&primary_fuel=coal&co2_mass_min=500000")
+    assert result["total"] == 2
+    assert {row["unit_id"] for row in result["records"]} == {"U1", "U2"}
+
+    assert search("facility_name=river")["total"] == 3
+    assert search("nox_control_information=catalytic")["total"] == 2
+    assert search("reporting_year=2024&so2_mass_max=500")["total"] == 3
+
+    top = search("reporting_year=2024&sort=co2_mass&order=desc&limit=2")
+    assert [row["co2_mass"] for row in top["records"]] == [900000, 800000]
+    assert top["total"] == 4 and top["count"] == 2
+
+    page_two = search("reporting_year=2024&sort=co2_mass&order=desc&limit=2&offset=2")
+    assert [row["co2_mass"] for row in page_two["records"]] == [600000, 300000]
+
+    history = search("facility_id=100&unit_id=u1&reporting_year_min=2023&reporting_year_max=2024&sort=reporting_year&order=asc")
+    assert [row["reporting_year"] for row in history["records"]] == [2023, 2024]
+
+    assert client.get("/api/annual-records?sort=not_a_column").status_code == 400
+    assert client.get("/api/annual-records?co2_mass_min=abc").status_code == 400
+
+    csv_text = client.get("/api/annual-records.csv?state=KY&primary_fuel=coal").data.decode()
+    assert len(csv_text.strip().splitlines()) == 1 + 3
+
+
 def test_health_endpoint(client):
     response = client.get("/api/health")
     assert response.status_code == 200

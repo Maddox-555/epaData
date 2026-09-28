@@ -7,15 +7,63 @@ EPA Data Management, Evaluation, and Visualization System.
 - [Complete database schema](DATABASE_SCHEMA.md) (includes the maintained Mermaid ER diagram)
 - [SQLAlchemy model definitions](models.py)
 
-## Backend API
+## Running the website
 
-Install dependencies with `pip install -r requirements.txt`, then start the API:
+The Flask app serves both the web interface and the JSON/CSV API from one process. From the repository root:
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 python app.py
 ```
 
-The backend exposes JSON/CSV responses and does not implement a frontend yet:
+Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser. Stop the server with `Ctrl+C`.
+
+The app reads the SQLite database `epa_data.db` in the repository root, so run `python app.py` from that folder. The committed database already contains CAMPD 2020–2024, TRACI 2.2, and NASA POWER data; see [Populate source data](#populate-source-data) only if you need to rebuild or extend it.
+
+The EPA Retrieval page needs the server-side `EPA_API_KEY` environment variable. Set it in the same terminal before starting the server; without it, retrieval returns a "not configured" message and the other pages still work:
+
+```powershell
+$env:EPA_API_KEY = "your-key"
+python app.py
+```
+
+### Frontend layout
+
+Flask's default folders hold the frontend:
+
+- `templates/index.html` - single-page Jinja template with the Home, EPA Retrieval, Upload, Explorer, and Datasets views.
+- `static/styles.css` - page styles.
+- `static/app.js` - view switching and `fetch` calls to the API routes below.
+
+The page is rendered at `/`. Static files are referenced with `url_for('static', filename=...)`, so keep new assets inside `static/`.
+
+### Searching data
+
+The Explorer page searches annual unit records (one row per facility, unit, and reporting year). All filled-in fields combine with AND:
+
+- **Basic filters:** facility ID, unit ID, and state match exactly but ignore case. Facility name, county, primary/secondary fuel, unit type, and SO₂/NOx/PM control fields match partial text and ignore case, so `coal` finds `Coal` and `catalytic` finds `Selective Catalytic Reduction`.
+- **Ranges:** minimum and maximum bounds for operating time (hr), gross load (MWh), heat input (mmBtu), and CO₂, SO₂, and NOx mass (short tons).
+- **Historical search:** Year From and Year To, for example one facility and unit from 2020 to 2024 sorted by reporting year.
+- **Top-N and bottom-N:** choose Sort By and Order, then the page size. For example, sort by CO₂ with "Highest first" and 10 per page for the top 10 CO₂-emitting units. Clicking a column header also sorts by it. Missing values always sort last.
+- **Pagination, CSV, and sharing:** results show the total match count with Previous/Next buttons. Download CSV exports every matching row with the same filters and sort. Each search updates the page URL, so reloading or sharing it reruns the same search.
+
+Example: coal-fired units in Kentucky in 2024 with CO₂ above 500,000 short tons, largest first:
+
+```text
+http://127.0.0.1:5000/?state=KY&reporting_year=2024&primary_fuel=coal&co2_mass_min=500000&sort=co2_mass&order=desc
+```
+
+### Known frontend limitations
+
+- **Search:** rankings are per unit. Facility-level totals (for example the top 10 facilities by summed CO₂) and group-and-rank queries (the top facility in each state) are not implemented yet, and result rows do not link to unit detail pages.
+- **EPA Retrieval:** the form posts only filters, but `POST /api/data/retrieve/epa-campd` also requires a CAMPD `url`, so the request is rejected even when `EPA_API_KEY` is set. Use `populate_database.py --epa-years ...` to load CAMPD data until the form supplies the endpoint.
+- **Upload:** uploads run as a validation preview and do not import rows; the page has no approve step yet. To import, call `POST /api/data/upload?approve=true`.
+
+## Backend API
+
+`GET /api` returns the endpoint list as JSON. The routes are:
 
 - `GET /api/health` - service health check.
 - `GET /api/sources` - list the configured original source definitions and whether their schema can currently be imported.
@@ -24,8 +72,13 @@ The backend exposes JSON/CSV responses and does not implement a frontend yet:
 - `POST /api/data/retrieve/epa-campd` - named EPA CAMPD retrieval route; accepts the same JSON body as the generic retrieval route and records the source URL in provenance.
 - `GET /api/datasets` - list retrieval/upload datasets and counts.
 - `GET /api/facilities` - list imported facilities.
-- `GET /api/annual-records` - search annual records with facility, state, county, unit, fuel, type, year, operating-time, load, heat-input, and emissions filters.
-- `GET /api/annual-records.csv` - download the filtered annual-record query as CSV.
+- `GET /api/annual-records` - search annual records. Returns `total` (all matches), `count` (rows in this page), `limit`, `offset`, and `records`. Query parameters:
+  - Text: `facility_id`, `unit_id`, `state` (exact, case-insensitive); `facility_name`, `county`, `primary_fuel`, `secondary_fuel`, `unit_type`, `so2_control_information`, `nox_control_information`, `pm_control_information`, `program_code` (partial, case-insensitive).
+  - Years: `reporting_year`, `reporting_year_min`, `reporting_year_max`.
+  - Ranges: `<metric>_min` and `<metric>_max` for `operating_time`, `gross_load`, `steam_load`, `heat_input`, `co2_mass`, `so2_mass`, and `nox_mass`. A bare `<metric>=value` is treated as a minimum.
+  - Sorting and paging: `sort` (a metric, `reporting_year`, `facility_name`, `facility_id`, `unit_id`, `state`, `county`, `primary_fuel`, or `unit_type`), `order` (`desc` default, or `asc`), `limit` (1–1000, default 100), `offset`.
+  - Invalid numbers or sort columns return `400` with an error message.
+- `GET /api/annual-records.csv` - download every row matching the same filters and sort as CSV (`limit`/`offset` are ignored).
 
 ### Populate source data
 

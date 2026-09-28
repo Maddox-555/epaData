@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 import requests
-from sqlalchemy import Select, desc, select
+from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session
 
 from models import (
@@ -301,15 +301,98 @@ def retrieve_dataframe(url: str, *, params: dict[str, Any] | None = None, timeou
     return read_dataframe(response.content, url.split("?")[0]), response.content
 
 
+EXACT_TEXT_FILTERS = {
+    "facility_id": Facility.epa_facility_id,
+    "unit_id": Unit.epa_unit_id,
+    "state": Facility.state,
+}
+CONTAINS_TEXT_FILTERS = {
+    "facility_name": Facility.facility_name,
+    "county": Facility.county,
+    "primary_fuel": Unit.primary_fuel,
+    "secondary_fuel": Unit.secondary_fuel,
+    "unit_type": Unit.unit_type,
+    "so2_control_information": AnnualRecord.so2_control_information,
+    "nox_control_information": AnnualRecord.nox_control_information,
+    "pm_control_information": AnnualRecord.pm_control_information,
+    "program_code": AnnualRecord.program_code,
+}
+RANGE_FILTERS = {
+    "operating_time": AnnualRecord.operating_time,
+    "gross_load": AnnualRecord.gross_load,
+    "steam_load": AnnualRecord.steam_load,
+    "heat_input": AnnualRecord.heat_input,
+    "co2_mass": AnnualRecord.co2_mass,
+    "so2_mass": AnnualRecord.so2_mass,
+    "nox_mass": AnnualRecord.nox_mass,
+}
+SORT_COLUMNS = {
+    "facility_name": Facility.facility_name,
+    "facility_id": Facility.epa_facility_id,
+    "unit_id": Unit.epa_unit_id,
+    "state": Facility.state,
+    "county": Facility.county,
+    "primary_fuel": Unit.primary_fuel,
+    "unit_type": Unit.unit_type,
+    "reporting_year": AnnualRecord.reporting_year,
+    **RANGE_FILTERS,
+}
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def annual_filters(args: dict[str, Any]) -> list[Any]:
+    """Translate search arguments into SQL conditions; raise ValueError for invalid numbers."""
+    filters: list[Any] = []
+    for arg, field in EXACT_TEXT_FILTERS.items():
+        value = str(args.get(arg) or "").strip()
+        if value:
+            filters.append(func.upper(field) == value.upper())
+    for arg, field in CONTAINS_TEXT_FILTERS.items():
+        value = str(args.get(arg) or "").strip()
+        if value:
+            filters.append(field.ilike(f"%{_escape_like(value)}%", escape="\\"))
+    for arg, operator in (("reporting_year", "eq"), ("reporting_year_min", "ge"), ("reporting_year_max", "le")):
+        value = str(args.get(arg) or "").strip()
+        if value:
+            year = int(value)
+            column = AnnualRecord.reporting_year
+            filters.append(column == year if operator == "eq" else column >= year if operator == "ge" else column <= year)
+    for name, field in RANGE_FILTERS.items():
+        # A bare metric name is kept as a minimum for backward compatibility.
+        for arg, is_minimum in ((name, True), (f"{name}_min", True), (f"{name}_max", False)):
+            value = str(args.get(arg) or "").strip()
+            if value:
+                number = float(value)
+                filters.append(field >= number if is_minimum else field <= number)
+    return filters
+
+
+def annual_order(args: dict[str, Any]) -> list[Any]:
+    sort = str(args.get("sort") or "").strip()
+    if not sort:
+        return [desc(AnnualRecord.reporting_year), Facility.facility_name, Unit.epa_unit_id, AnnualRecord.annual_record_id]
+    if sort not in SORT_COLUMNS:
+        raise ValueError(f"unsupported sort column '{sort}'")
+    order = str(args.get("order") or "desc").strip().lower()
+    if order not in {"asc", "desc"}:
+        raise ValueError("order must be 'asc' or 'desc'")
+    column = SORT_COLUMNS[sort]
+    primary = column.asc().nulls_last() if order == "asc" else column.desc().nulls_last()
+    return [primary, AnnualRecord.annual_record_id]
+
+
+def _annual_base_query(*columns: Any) -> Select[Any]:
+    return select(*columns).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility)
+
+
 def build_annual_query(args: dict[str, Any]) -> Select[Any]:
-    query = select(AnnualRecord, Unit, Facility).join(AnnualRecord.unit).join(Unit.facility)
-    filters = []
-    for model, field, arg in [(Facility, Facility.epa_facility_id, "facility_id"), (Facility, Facility.state, "state"), (Facility, Facility.county, "county"), (Unit, Unit.epa_unit_id, "unit_id"), (Unit, Unit.primary_fuel, "primary_fuel"), (Unit, Unit.secondary_fuel, "secondary_fuel"), (Unit, Unit.unit_type, "unit_type")]:
-        if args.get(arg):
-            filters.append(field == args[arg])
-    for field, arg in [(AnnualRecord.reporting_year, "reporting_year"), (AnnualRecord.operating_time, "operating_time"), (AnnualRecord.gross_load, "gross_load"), (AnnualRecord.heat_input, "heat_input"), (AnnualRecord.co2_mass, "co2_mass"), (AnnualRecord.so2_mass, "so2_mass"), (AnnualRecord.nox_mass, "nox_mass")]:
-        if args.get(arg):
-            filters.append(field == int(args[arg]) if arg == "reporting_year" else field >= float(args[arg]))
-    if filters:
-        query = query.where(*filters)
-    return query.order_by(desc(AnnualRecord.reporting_year), Facility.facility_name)
+    query = _annual_base_query(AnnualRecord, Unit, Facility).where(*annual_filters(args))
+    return query.order_by(*annual_order(args))
+
+
+def count_annual_records(session: Session, args: dict[str, Any]) -> int:
+    query = _annual_base_query(func.count(AnnualRecord.annual_record_id)).where(*annual_filters(args))
+    return int(session.scalar(query) or 0)

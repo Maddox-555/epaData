@@ -1,0 +1,6 @@
+EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Primary Fuel,NOx Control,CO2 Mass,SO2 Mass
+100,Big River Plant,KY,U1,2024,Coal,Selective Catalytic Reduction,900000,400
+100,Big River Plant,KY,U2,2024,Coal,,600000,900
+200,Gas Station,KY,G1,2024,Pipeline Natural Gas,,300000,1
+300,Ohio Coal Works,OH,C1,2024,Coal,,800000,50
+100,Big River Plant,KY,U1,2023,Coal,Selective Catalytic Reduction,850000,420

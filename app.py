@@ -10,11 +10,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from data_service import SOURCE_DEFINITIONS, build_annual_query, ingest_dataframe, read_dataframe, retrieve_dataframe
+from data_service import SOURCE_DEFINITIONS, build_annual_query, count_annual_records, ingest_dataframe, read_dataframe, retrieve_dataframe
 from models import AnnualRecord, Base, Dataset, Facility, Unit
 
 
@@ -64,6 +64,10 @@ def create_app(database_url: str | None = None) -> Flask:
 
     @app.get("/")
     def index() -> Any:
+        return render_template("index.html")
+
+    @app.get("/api")
+    def api_index() -> Any:
         return jsonify({
             "service": "epaData",
             "status": "ok",
@@ -167,9 +171,11 @@ def create_app(database_url: str | None = None) -> Flask:
             limit = min(max(int(args.pop("limit", 100)), 1), 1000)
             offset = max(int(args.pop("offset", 0)), 0)
             with SessionLocal() as session:
-                rows = session.execute(build_annual_query(args).limit(limit).offset(offset)).all()
+                query = build_annual_query(args)
+                total = count_annual_records(session, args)
+                rows = session.execute(query.limit(limit).offset(offset)).all()
                 data = [_record_dict(record, unit, facility) for record, unit, facility in rows]
-                return jsonify({"count": len(data), "limit": limit, "offset": offset, "records": data})
+                return jsonify({"count": len(data), "total": total, "limit": limit, "offset": offset, "records": data})
         except (ValueError, TypeError) as exc:
             return jsonify({"error": f"Invalid query parameter: {exc}"}), 400
 
@@ -178,8 +184,12 @@ def create_app(database_url: str | None = None) -> Flask:
         args = request.args.to_dict()
         args.pop("limit", None)
         args.pop("offset", None)
+        try:
+            query = build_annual_query(args)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid query parameter: {exc}"}), 400
         with SessionLocal() as session:
-            rows = session.execute(build_annual_query(args).limit(10000)).all()
+            rows = session.execute(query).all()
         output = io.StringIO()
         records = [_record_dict(record, unit, facility) for record, unit, facility in rows]
         if records:

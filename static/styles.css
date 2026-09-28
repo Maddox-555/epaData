@@ -283,7 +283,16 @@ button { font-family: inherit; }
   margin-bottom: 0.5rem;
 }
 
-.form-field input {
+.form-section {
+  grid-column: 1 / -1;
+  font-size: 1rem;
+  color: var(--text-main);
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.form-field input,
+.form-field select {
   background-color: #f9fafb;
   border: 1px solid var(--border-light);
   padding: 0.8rem 1rem;
@@ -293,7 +302,8 @@ button { font-family: inherit; }
   transition: all 0.2s;
 }
 
-.form-field input:focus {
+.form-field input:focus,
+.form-field select:focus {
   outline: none;
   background-color: white;
   border-color: var(--primary);
@@ -366,6 +376,20 @@ button { font-family: inherit; }
   font-size: 0.8rem;
   letter-spacing: 0.05em;
 }
+
+.table th[data-sort] { cursor: pointer; user-select: none; }
+.table th[data-sort]:hover { color: var(--primary-hover); }
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  color: var(--text-muted);
+}
+.pagination[hidden] { display: none; }
+.pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .table tbody tr { transition: background-color 0.2s; }
 .table tbody tr:hover { background-color: #f0fdf4; }
