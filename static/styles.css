@@ -422,7 +422,6 @@ button { font-family: inherit; }
 .download-link { margin-right: 0.5rem; text-decoration: none; }
 .upload-report { white-space: pre-wrap; max-height: 18rem; overflow: auto; margin-top: 1rem; color: var(--text-muted); }
 .description-search-button { justify-self: start; }
-.description-interpretation { display: block; color: var(--secondary-hover); font-size: 0.9rem; font-weight: 600; }
 
 .footer {
   text-align: center;

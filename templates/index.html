@@ -129,26 +129,24 @@
         <h1>Data Explorer</h1>
         <p class="panel-desc">Search annual unit records. Filters combine with AND; text filters ignore case, and name, fuel, type, and control filters match partial text. Leave a field blank to skip it.</p>
 
-        <form id="search-form" class="form-grid">
+        <form id="search-form" class="form-grid" autocomplete="off">
           <div class="form-field full description-search">
             <label for="search-description">Search by description</label>
-            <input id="search-description" name="description" placeholder="show coal plants in Kentucky above 500k tons of CO2 in 2024">
+            <input id="search-description" name="description" autocomplete="off">
             <button class="secondary description-search-button" type="button" id="description-search-button" aria-label="Search description" title="Search description">&#128269; Search description</button>
-            <small>Try: “natural gas units in Texas with gross load between 100,000 and 1.2 million MWh” or “top 10 facilities by CO2 emissions in Ohio”. Structured filters below override matching phrases.</small>
-            <output id="description-interpretation" class="description-interpretation" aria-live="polite"></output>
           </div>
           <h3 class="form-section">Identification</h3>
           <div class="form-field"><label>Facility ID</label><input name="facility_id"></div>
           <div class="form-field"><label>Facility Name</label><input name="facility_name"></div>
           <div class="form-field"><label>Unit ID</label><input name="unit_id"></div>
-          <div class="form-field"><label>State</label><input name="state" maxlength="2" placeholder="KY"></div>
+          <div class="form-field"><label>State</label><input name="state" maxlength="2" autocomplete="off"></div>
           <div class="form-field"><label>County</label><input name="county"></div>
           <div class="form-field"><label>Reporting Year</label><input name="reporting_year" type="number"></div>
           <div class="form-field"><label>Year From</label><input name="reporting_year_min" type="number"></div>
           <div class="form-field"><label>Year To</label><input name="reporting_year_max" type="number"></div>
 
           <h3 class="form-section">Fuel and controls</h3>
-          <div class="form-field"><label>Primary Fuel</label><input name="primary_fuel" placeholder="Coal"></div>
+          <div class="form-field"><label>Primary Fuel</label><input name="primary_fuel" autocomplete="off"></div>
           <div class="form-field"><label>Secondary Fuel</label><input name="secondary_fuel"></div>
           <div class="form-field"><label>Unit Type</label><input name="unit_type"></div>
           <div class="form-field"><label>SO₂ Control</label><input name="so2_control_information"></div>

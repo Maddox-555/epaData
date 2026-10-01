@@ -33,7 +33,6 @@ const pageInfo = document.getElementById("page-info");
 const prevPageBtn = document.getElementById("prev-page");
 const nextPageBtn = document.getElementById("next-page");
 const descriptionSearchBtn = document.getElementById("description-search-button");
-const descriptionInterpretation = document.getElementById("description-interpretation");
 
 const RESULT_COLUMNS = [
   row => `${row.facility_name} (${row.facility_id})`,
@@ -70,11 +69,6 @@ function searchParams() {
 
 function renderResults(data) {
   lastResponse = data;
-  const interpreted = Object.entries(data.interpreted_filters || {})
-    .filter(([key]) => key !== "description")
-    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`)
-    .join(" | ");
-  descriptionInterpretation.textContent = interpreted ? `Understood as: ${interpreted}` : "";
   resultsBody.replaceChildren();
   if (data.records.length === 0) {
     const tr = document.createElement("tr");
@@ -130,7 +124,6 @@ function runSearch(offset = 0, baseParams = null) {
     })
     .catch(error => {
       lastResponse = null;
-      descriptionInterpretation.textContent = error.message;
       resultsBody.replaceChildren();
       pagination.hidden = true;
       resultsCount.textContent = error.message;

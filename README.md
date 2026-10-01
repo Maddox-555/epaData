@@ -82,7 +82,7 @@ The description search is designed for users who do not know the database column
 - `top 10 facilities by CO2 emissions in Ohio`
 - `units with SO2 below 500 tons`
 
-It understands state names or abbreviations, common fuel names, CO2/SO2/NOx, gross load, heat input, operating time, comparison words, numeric ranges, `k`/`million` units, year ranges, and top/bottom ranking language. The magnifying-glass **Search description** button searches only the description bar; the regular Search button combines it with structured filters. The page displays the interpreted intent, which is also returned by the API as `interpreted_filters`.
+It understands state names or abbreviations, common fuel names, CO2/SO2/NOx, gross load, heat input, operating time, comparison words, numeric ranges, `k`/`million` units, year ranges, and top/bottom ranking language. The magnifying-glass **Search description** button searches only the description bar; the regular Search button combines it with structured filters. The interpreted filters remain available from the API as `interpreted_filters`.
 
 The Explorer CSV download reads the populated SQLite database through `/api/annual-records.csv`; it does not call EPA and does not require `EPA_API_KEY`. The key is required only for a new live CAMPD retrieval.
 
