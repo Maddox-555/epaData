@@ -37,8 +37,8 @@
 
       <div class="cards">
         <div class="card">
-          <h2>Phase 1 Goals</h2>
-          <p>Data retrieval, upload, validation, storage, search, display, and download.</p>
+          <h2>Current Data Coverage</h2>
+          <p>EPA CAMPD annual records covering reporting years 2020–2024, with EPA TRACI 2.2 reference factors.</p>
         </div>
         <div class="card">
           <h2>Data Sources</h2>
@@ -132,8 +132,10 @@
         <form id="search-form" class="form-grid">
           <div class="form-field full description-search">
             <label for="search-description">Search by description</label>
-            <input id="search-description" name="description" placeholder="coal-fired units in Kentucky in 2025 with CO2 emissions greater than 500000">
-            <small>Describe a state, year, fuel, and/or metric threshold in plain language. Structured filters below override matching phrases.</small>
+            <input id="search-description" name="description" placeholder="show coal plants in Kentucky above 500k tons of CO2 in 2024">
+            <button class="secondary description-search-button" type="button" id="description-search-button" aria-label="Search description" title="Search description">&#128269; Search description</button>
+            <small>Try: “natural gas units in Texas with gross load between 100,000 and 1.2 million MWh” or “top 10 facilities by CO2 emissions in Ohio”. Structured filters below override matching phrases.</small>
+            <output id="description-interpretation" class="description-interpretation" aria-live="polite"></output>
           </div>
           <h3 class="form-section">Identification</h3>
           <div class="form-field"><label>Facility ID</label><input name="facility_id"></div>

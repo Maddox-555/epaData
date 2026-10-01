@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 import app as app_module
 from app import create_app
+from data_service import parse_search_description
 
 
 @pytest.fixture
@@ -130,6 +131,16 @@ def test_description_search_rejects_unrecognized_text(client):
     assert "supported" in response.json["error"]
 
 
+def test_description_parser_supports_novice_query_variations():
+    assert parse_search_description("show coal plants in Kentucky that emitted more than 500k tons of CO2 in 2024") == {
+        "state": "KY", "reporting_year": "2024", "primary_fuel": "coal", "co2_mass_min": "500000",
+    }
+    assert parse_search_description("natural gas units in Texas with gross load between 100,000 and 1.2 million MWh") == {
+        "state": "TX", "primary_fuel": "natural gas", "gross_load_min": "100000", "gross_load_max": "1200000",
+    }
+    assert parse_search_description("top 10 facilities by CO2 emissions in Ohio")["sort"] == "co2_mass"
+
+
 def test_upload_can_be_approved_after_preview_and_exposes_audit_downloads(client):
     content = (
         b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Primary Fuel,CO2 Mass\n"
@@ -198,18 +209,27 @@ def test_epa_campd_retrieval_records_source_url(client, monkeypatch):
         "facility_id": "100", "facility_name": "Test Plant", "state": "OH",
         "unit_id": "U1", "reporting_year": 2022,
     }])
-    source_url = "https://example.test/campd.csv"
     captured = {}
     monkeypatch.setenv("EPA_API_KEY", "test-server-key")
-    monkeypatch.setattr(app_module, "retrieve_dataframe", lambda url, params=None: (captured.update({"params": params}) or (frame, b"source")))
+    monkeypatch.setattr(app_module, "retrieve_campd_dataframe", lambda params, api_key: (captured.update({"params": params, "api_key": api_key}) or (frame, b"source")))
 
-    response = client.post("/api/data/retrieve/epa-campd", json={"url": source_url, "approve": True})
+    response = client.post("/api/data/retrieve/epa-campd", json={"params": {"year": 2022}, "approve": True})
 
     assert response.status_code == 200
     assert response.json["status"] == "imported"
     with client.application.extensions["epa_sessionmaker"]() as session:
         provenance = session.execute(text("SELECT source_url_or_api FROM data_provenance")).scalar_one()
-        assert provenance == source_url
+        assert provenance.endswith("/emissions-mgmt/emissions/apportioned/annual")
         query_parameters = session.execute(text("SELECT query_parameters FROM data_provenance")).scalar_one()
         assert "test-server-key" not in query_parameters
-    assert captured["params"]["api_key"] == "test-server-key"
+    assert captured["params"]["year"] == 2022
+    assert captured["api_key"] == "test-server-key"
+
+
+def test_epa_campd_retrieval_requires_reporting_year(client, monkeypatch):
+    monkeypatch.setenv("EPA_API_KEY", "test-server-key")
+
+    response = client.post("/api/data/retrieve/epa-campd", json={"params": {"state": "KY"}})
+
+    assert response.status_code == 400
+    assert "reporting year" in response.json["error"]

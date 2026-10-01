@@ -22,12 +22,23 @@ Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser. Stop the 
 
 The app reads the SQLite database `epa_data.db` in the repository root, so run `python app.py` from that folder. The committed database already contains CAMPD 2020–2024, TRACI 2.2, and NASA POWER data; see [Populate source data](#populate-source-data) only if you need to rebuild or extend it.
 
-The EPA Retrieval page needs the server-side `EPA_API_KEY` environment variable. Set it in the same terminal before starting the server; without it, retrieval returns a "not configured" message and the other pages still work:
+The EPA Retrieval page needs the server-side `EPA_API_KEY` environment variable. Configure it in the same PowerShell session used to start Flask:
 
 ```powershell
 $env:EPA_API_KEY = "your-key"
 python app.py
 ```
+
+The key is read by Python on the server only. Do not put it in JavaScript, a URL, a CSV file, or source control. To retrieve CAMPD data:
+
+1. Set `EPA_API_KEY` as shown above.
+2. Start the server with `python app.py`.
+3. Open the **EPA Retrieval** view and select a reporting year, state, facility, fuel, unit type, or control technology.
+4. Submit the form. The server contacts CAMPD, validates the response, preserves retrieval provenance, and imports only after approval.
+
+A reporting year is required because the CAMPD annual endpoint rejects requests that contain only a state or other filters.
+
+The environment variable lasts only for the current PowerShell window. For a persistent Windows user variable, use `setx EPA_API_KEY "your-key"`, then open a new terminal. Avoid `setx` on shared machines because it stores the secret in your user profile.
 
 ### Frontend layout
 
@@ -62,6 +73,16 @@ http://127.0.0.1:5000/?state=KY&reporting_year=2024&primary_fuel=coal&co2_mass_m
 - **Upload:** a preview stores the original file and validation report. Users can approve a clean preview or cancel it from the Upload page; invalid rows remain available in the error report and cannot be imported.
 
 The Explorer also accepts a description such as `coal-fired units in Kentucky in 2025 with CO2 emissions greater than 500000`. The server translates supported state, year, fuel, and metric conditions into the same filters used by structured search. Explicit query fields override values parsed from the description. Unrecognized descriptions return `400` rather than silently returning all records.
+
+The description search is designed for users who do not know the database columns. Examples include:
+
+- `show coal plants in Kentucky that emitted more than 500k tons of CO2 in 2024`
+- `natural gas units in Texas with gross load between 100,000 and 1.2 million MWh`
+- `show the same unit from 2015 to 2025`
+- `top 10 facilities by CO2 emissions in Ohio`
+- `units with SO2 below 500 tons`
+
+It understands state names or abbreviations, common fuel names, CO2/SO2/NOx, gross load, heat input, operating time, comparison words, numeric ranges, `k`/`million` units, year ranges, and top/bottom ranking language. The magnifying-glass **Search description** button searches only the description bar; the regular Search button combines it with structured filters. The page displays the interpreted intent, which is also returned by the API as `interpreted_filters`.
 
 The Explorer CSV download reads the populated SQLite database through `/api/annual-records.csv`; it does not call EPA and does not require `EPA_API_KEY`. The key is required only for a new live CAMPD retrieval.
 

@@ -32,6 +32,8 @@ const pagination = document.getElementById("pagination");
 const pageInfo = document.getElementById("page-info");
 const prevPageBtn = document.getElementById("prev-page");
 const nextPageBtn = document.getElementById("next-page");
+const descriptionSearchBtn = document.getElementById("description-search-button");
+const descriptionInterpretation = document.getElementById("description-interpretation");
 
 const RESULT_COLUMNS = [
   row => `${row.facility_name} (${row.facility_id})`,
@@ -50,6 +52,7 @@ const RESULT_COLUMNS = [
 const NUMERIC_COLUMN_START = 6;
 
 let lastResponse = null;
+let lastSearchParams = null;
 
 function formatNumber(value) {
   if (value === null || value === undefined) return "—";
@@ -67,6 +70,11 @@ function searchParams() {
 
 function renderResults(data) {
   lastResponse = data;
+  const interpreted = Object.entries(data.interpreted_filters || {})
+    .filter(([key]) => key !== "description")
+    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`)
+    .join(" | ");
+  descriptionInterpretation.textContent = interpreted ? `Understood as: ${interpreted}` : "";
   resultsBody.replaceChildren();
   if (data.records.length === 0) {
     const tr = document.createElement("tr");
@@ -107,8 +115,10 @@ function renderResults(data) {
   pagination.hidden = total === 0;
 }
 
-function runSearch(offset = 0) {
-  const params = searchParams();
+function runSearch(offset = 0, baseParams = null) {
+  const params = baseParams ? new URLSearchParams(baseParams) : searchParams();
+  params.delete("offset");
+  lastSearchParams = new URLSearchParams(params);
   if (offset > 0) params.set("offset", offset);
   history.replaceState(null, "", "?" + params.toString());
   resultsCount.textContent = "Searching…";
@@ -120,6 +130,7 @@ function runSearch(offset = 0) {
     })
     .catch(error => {
       lastResponse = null;
+      descriptionInterpretation.textContent = error.message;
       resultsBody.replaceChildren();
       pagination.hidden = true;
       resultsCount.textContent = error.message;
@@ -132,11 +143,22 @@ searchForm.addEventListener("submit", event => {
 });
 
 prevPageBtn.addEventListener("click", () => {
-  if (lastResponse) runSearch(Math.max(0, lastResponse.offset - lastResponse.limit));
+  if (lastResponse) runSearch(Math.max(0, lastResponse.offset - lastResponse.limit), lastSearchParams);
 });
 
 nextPageBtn.addEventListener("click", () => {
-  if (lastResponse) runSearch(lastResponse.offset + lastResponse.limit);
+  if (lastResponse) runSearch(lastResponse.offset + lastResponse.limit, lastSearchParams);
+});
+
+descriptionSearchBtn.addEventListener("click", () => {
+  const description = searchForm.elements.namedItem("description").value.trim();
+  if (!description) {
+    resultsCount.textContent = "Enter a description first, such as: coal units in Kentucky above 500k tons of CO2.";
+    return;
+  }
+  const params = new URLSearchParams();
+  params.set("description", description);
+  runSearch(0, params);
 });
 
 document.querySelectorAll("#results-table th[data-sort]").forEach(th => {
@@ -287,6 +309,7 @@ retrievalForm.addEventListener("submit", event => {
   Array.from(retrievalForm.elements).forEach(el => {
     if (el.name && el.value) payload.params[el.name] = el.value;
   });
+  payload.approve = true;
   retrievalStatus.textContent = "Retrieving from CAMPD…";
   fetch("/api/data/retrieve/epa-campd", {
     method: "POST",

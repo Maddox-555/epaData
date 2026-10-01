@@ -10,11 +10,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import requests
 from flask import Flask, jsonify, render_template, request, send_file
 from sqlalchemy import create_engine, desc, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from data_service import SOURCE_DEFINITIONS, RANGE_FILTERS, annual_filters, approve_uploaded_dataset, build_annual_query, cancel_uploaded_dataset, count_annual_records, ingest_dataframe, normalized_search_args, read_dataframe, retrieve_dataframe
+from data_service import EPA_CAMPD_ANNUAL_URL, SOURCE_DEFINITIONS, RANGE_FILTERS, annual_filters, approve_uploaded_dataset, build_annual_query, cancel_uploaded_dataset, count_annual_records, ingest_dataframe, normalized_search_args, read_dataframe, retrieve_campd_dataframe, retrieve_dataframe
 from models import AnnualRecord, Base, DataProvenance, Dataset, Facility, Unit, UploadValidationError
 
 
@@ -184,9 +185,16 @@ def create_app(database_url: str | None = None) -> Flask:
             with SessionLocal() as session:
                 result = ingest_dataframe(session, frame, filename=filename, source_name=payload.get("source_name", "EPA CAMPD retrieval"), approve=approve, storage_dir=app.config["UPLOAD_FOLDER"], source_url_or_api=url, query_parameters=payload.get("provenance_params", params))
             return jsonify(result)
-        except Exception as exc:
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 502
+            app.logger.warning("Remote retrieval rejected by source with status %s", status_code)
+            return jsonify({"error": f"The remote data source rejected the request (HTTP {status_code}). Check the reporting year and filters."}), 502
+        except requests.RequestException:
+            app.logger.warning("Remote retrieval failed while contacting the source")
+            return jsonify({"error": "The remote data source could not be reached."}), 502
+        except Exception:
             app.logger.exception("Remote retrieval failed")
-            return jsonify({"error": "Remote data could not be retrieved", "detail": str(exc)}), 502
+            return jsonify({"error": "Remote data could not be retrieved."}), 502
 
     @app.post("/api/data/retrieve/epa-campd")
     def retrieve_epa_campd() -> Any:
@@ -197,13 +205,24 @@ def create_app(database_url: str | None = None) -> Flask:
         params = dict(payload.get("params") or {})
         if "reporting_year" in params and "year" not in params:
             params["year"] = params["reporting_year"]
+        if not params.get("year"):
+            return jsonify({"error": "A reporting year is required for CAMPD annual retrieval."}), 400
         payload["provenance_params"] = dict(params)
-        params["api_key"] = api_key
-        payload["params"] = params
-        payload.setdefault("url", SOURCE_DEFINITIONS["epa-campd"]["default_endpoint"])
-        payload.setdefault("source_name", SOURCE_DEFINITIONS["epa-campd"]["name"])
-        with app.test_request_context("/api/data/retrieve", method="POST", json=payload):
-            return retrieve_data()
+        try:
+            frame, content = retrieve_campd_dataframe(params, api_key)
+            year = int(params["year"])
+            with SessionLocal() as session:
+                result = ingest_dataframe(session, frame, filename=f"campd-{year}.json", source_name=SOURCE_DEFINITIONS["epa-campd"]["name"], content=content, approve=bool(payload.get("approve", False)), storage_dir=app.config["UPLOAD_FOLDER"], source_url_or_api=EPA_CAMPD_ANNUAL_URL, query_parameters=params)
+            return jsonify(result), 200 if result["status"] in {"imported", "pending"} else 422
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 502
+            app.logger.warning("CAMPD retrieval rejected by source with status %s", status_code)
+            return jsonify({"error": f"CAMPD rejected the request (HTTP {status_code}). Check the reporting year and filters."}), 502
+        except requests.RequestException:
+            app.logger.warning("CAMPD retrieval failed while contacting the source")
+            return jsonify({"error": "CAMPD could not be reached."}), 502
 
     @app.get("/api/annual-records")
     def annual_records() -> Any:
