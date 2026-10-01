@@ -55,11 +55,15 @@ Example: coal-fired units in Kentucky in 2024 with CO₂ above 500,000 short ton
 http://127.0.0.1:5000/?state=KY&reporting_year=2024&primary_fuel=coal&co2_mass_min=500000&sort=co2_mass&order=desc
 ```
 
-### Known frontend limitations
+### Phase 1 workflow coverage
 
-- **Search:** rankings are per unit. Facility-level totals (for example the top 10 facilities by summed CO₂) and group-and-rank queries (the top facility in each state) are not implemented yet, and result rows do not link to unit detail pages.
-- **EPA Retrieval:** the form posts only filters, but `POST /api/data/retrieve/epa-campd` also requires a CAMPD `url`, so the request is rejected even when `EPA_API_KEY` is set. Use `populate_database.py --epa-years ...` to load CAMPD data until the form supplies the endpoint.
-- **Upload:** uploads run as a validation preview and do not import rows; the page has no approve step yet. To import, call `POST /api/data/upload?approve=true`.
+- **Search:** unit rows link to historical unit detail pages. `/api/rankings` supports top-N unit, facility, and state totals by emissions, load, heat input, or operating time.
+- **EPA Retrieval:** the form supplies the official CAMPD annual endpoint and filters for year, state, facility, fuel, unit type, and control technology. The server adds `EPA_API_KEY`; browser code never receives it.
+- **Upload:** a preview stores the original file and validation report. Users can approve a clean preview or cancel it from the Upload page; invalid rows remain available in the error report and cannot be imported.
+
+The Explorer also accepts a description such as `coal-fired units in Kentucky in 2025 with CO2 emissions greater than 500000`. The server translates supported state, year, fuel, and metric conditions into the same filters used by structured search. Explicit query fields override values parsed from the description. Unrecognized descriptions return `400` rather than silently returning all records.
+
+The Explorer CSV download reads the populated SQLite database through `/api/annual-records.csv`; it does not call EPA and does not require `EPA_API_KEY`. The key is required only for a new live CAMPD retrieval.
 
 ## Backend API
 
@@ -68,6 +72,7 @@ http://127.0.0.1:5000/?state=KY&reporting_year=2024&primary_fuel=coal&co2_mass_m
 - `GET /api/health` - service health check.
 - `GET /api/sources` - list the configured original source definitions and whether their schema can currently be imported.
 - `POST /api/data/upload` - upload CSV/XLS/XLSX as multipart field `file`; defaults to validation preview. Add `?approve=true` to import only if validation passes.
+- `POST /api/data/upload/<dataset_id>/approve` and `/cancel` - approve or cancel a stored validation preview.
 - `POST /api/data/retrieve` - retrieve a CSV, Excel, or JSON URL with `{ "url": "...", "params": {...} }`; set `approve` to `true` to import.
 - `POST /api/data/retrieve/epa-campd` - named EPA CAMPD retrieval route; accepts the same JSON body as the generic retrieval route and records the source URL in provenance.
 - `GET /api/datasets` - list retrieval/upload datasets and counts.
@@ -79,6 +84,12 @@ http://127.0.0.1:5000/?state=KY&reporting_year=2024&primary_fuel=coal&co2_mass_m
   - Sorting and paging: `sort` (a metric, `reporting_year`, `facility_name`, `facility_id`, `unit_id`, `state`, `county`, `primary_fuel`, or `unit_type`), `order` (`desc` default, or `asc`), `limit` (1–1000, default 100), `offset`.
   - Invalid numbers or sort columns return `400` with an error message.
 - `GET /api/annual-records.csv` - download every row matching the same filters and sort as CSV (`limit`/`offset` are ignored).
+- `GET /api/datasets/<dataset_id>.csv` - download all records in one imported dataset.
+- `GET /api/uploads/<dataset_id>/errors.csv` - download the preserved validation/data-quality report.
+- `GET /api/datasets/<dataset_id>/provenance.csv` - download source, retrieval date, query parameters, and reporting-year provenance.
+- `GET /api/units/<facility_id>/<unit_id>` and `/unit/<facility_id>/<unit_id>` - retrieve or display unit history and metadata.
+- `GET /api/rankings` - rank by `metric` and `group_by=unit|facility|state`.
+- `GET /api/compare?facility_ids=100,200&reporting_year=2024` - return comparable records for selected facilities or unit IDs.
 
 ### Populate source data
 

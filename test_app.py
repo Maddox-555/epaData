@@ -94,6 +94,91 @@ def test_search_filters_ranges_sorting_and_pagination(client):
     assert len(csv_text.strip().splitlines()) == 1 + 3
 
 
+def test_description_search_interprets_project_example_and_downloads_from_database(client, monkeypatch):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Primary Fuel,CO2 Mass\n"
+        b"100,Big River Plant,KY,U1,2025,Coal,600000\n"
+        b"200,Gas Station,OH,G1,2025,Natural Gas,700000\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+    monkeypatch.delenv("EPA_API_KEY", raising=False)
+
+    response = client.get("/api/annual-records", query_string={
+        "description": "coal-fired units in Kentucky in 2025 with CO2 emissions greater than 500000",
+    })
+    assert response.status_code == 200
+    assert response.json["interpreted_filters"] == {
+        "state": "KY",
+        "reporting_year": "2025",
+        "primary_fuel": "coal",
+        "co2_mass_min": "500000",
+    }
+    assert response.json["total"] == 1
+    assert response.json["records"][0]["facility_name"] == "Big River Plant"
+
+    csv_response = client.get("/api/annual-records.csv", query_string={
+        "description": "coal-fired units in Kentucky in 2025 with CO2 emissions greater than 500000",
+    })
+    assert csv_response.status_code == 200
+    assert "Big River Plant" in csv_response.data.decode()
+
+
+def test_description_search_rejects_unrecognized_text(client):
+    response = client.get("/api/annual-records", query_string={"description": "show everything"})
+
+    assert response.status_code == 400
+    assert "supported" in response.json["error"]
+
+
+def test_upload_can_be_approved_after_preview_and_exposes_audit_downloads(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Primary Fuel,CO2 Mass\n"
+        b"100,Test Plant,OH,U1,2022,Coal,20\n"
+    )
+    preview = upload(client, content)
+    dataset_id = preview.json["dataset_id"]
+    assert preview.json["status"] == "pending"
+    assert client.get("/api/annual-records").json["count"] == 0
+
+    approved = client.post(f"/api/data/upload/{dataset_id}/approve")
+    assert approved.status_code == 200
+    assert approved.json["status"] == "imported"
+    assert client.get(f"/api/datasets/{dataset_id}.csv").status_code == 200
+    assert client.get(f"/api/datasets/{dataset_id}/provenance.csv").status_code == 200
+    detail = client.get("/api/units/100/U1")
+    assert detail.status_code == 200
+    assert detail.json["records"][0]["reporting_year"] == 2022
+
+
+def test_invalid_upload_has_error_download_and_can_be_cancelled(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year\n"
+        b"100,Test Plant,Ohio,U1,2022\n"
+    )
+    preview = upload(client, content)
+    dataset_id = preview.json["dataset_id"]
+    assert client.get(f"/api/uploads/{dataset_id}/errors.csv").status_code == 200
+    cancelled = client.post(f"/api/data/upload/{dataset_id}/cancel")
+    assert cancelled.json["status"] == "cancelled"
+    assert client.post(f"/api/data/upload/{dataset_id}/approve").status_code == 400
+
+
+def test_rankings_support_facility_state_and_unit_groups(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Primary Fuel,CO2 Mass\n"
+        b"100,Big River,KY,U1,2024,Coal,900\n"
+        b"100,Big River,KY,U2,2024,Coal,100\n"
+        b"200,Ohio Works,OH,U1,2024,Coal,500\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+    assert client.get("/api/rankings?group_by=facility&metric=co2_mass&limit=1").json["results"][0]["group_key"] == "100"
+    assert client.get("/api/rankings?group_by=state&metric=co2_mass").json["results"][0]["group_key"] == "KY"
+    assert client.get("/api/rankings?group_by=unit&metric=co2_mass").json["results"][0]["unit_id"] == "U1"
+    comparison = client.get("/api/compare?facility_ids=100,200&reporting_year=2024")
+    assert comparison.status_code == 200
+    assert comparison.json["count"] == 3
+
+
 def test_health_endpoint(client):
     response = client.get("/api/health")
     assert response.status_code == 200

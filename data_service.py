@@ -33,7 +33,7 @@ SOURCE_DEFINITIONS = {
     "epa-campd": {
         "name": "EPA CAMPD",
         "description": "EPA Clean Air Markets Division annual emissions and generation data.",
-        "default_endpoint": "https://api.epa.gov/easey/campd/services/",
+        "default_endpoint": "https://api.epa.gov/easey/emissions-mgmt/emissions/apportioned/annual",
         "supported_import": True,
     },
     "nasa-power": {
@@ -289,6 +289,48 @@ def ingest_dataframe(session: Session, frame: pd.DataFrame, *, filename: str, so
     return {"dataset_id": dataset.dataset_id, "status": dataset.status, "validation": report, "errors": errors}
 
 
+def approve_uploaded_dataset(session: Session, dataset_id: int) -> dict[str, Any]:
+    dataset = session.get(Dataset, dataset_id)
+    if dataset is None:
+        raise ValueError("Dataset was not found.")
+    uploaded = session.scalar(select(UploadedFile).where(UploadedFile.dataset_id == dataset_id))
+    if uploaded is None:
+        raise ValueError("Dataset has no stored upload file to approve.")
+    if dataset.status == "cancelled":
+        raise ValueError("Cancelled uploads cannot be approved.")
+    content = Path(uploaded.storage_reference).read_bytes()
+    accepted, errors, report = validate_dataframe(read_dataframe(content, uploaded.original_filename))
+    if errors:
+        dataset.status = "failed"
+        uploaded.validation_status = "invalid"
+        uploaded.validation_summary = report
+        session.commit()
+        return {"dataset_id": dataset_id, "status": dataset.status, "validation": report, "errors": errors}
+    import_accepted_rows(session, accepted, dataset)
+    dataset.number_of_accepted_records = report["accepted_records"]
+    dataset.number_of_rejected_records = report["rejected_records"]
+    dataset.status = "imported"
+    uploaded.validation_status = "approved"
+    uploaded.number_of_accepted_records = report["accepted_records"]
+    uploaded.validation_summary = report
+    session.commit()
+    return {"dataset_id": dataset_id, "status": dataset.status, "validation": report, "errors": []}
+
+
+def cancel_uploaded_dataset(session: Session, dataset_id: int) -> dict[str, Any]:
+    dataset = session.get(Dataset, dataset_id)
+    if dataset is None:
+        raise ValueError("Dataset was not found.")
+    if dataset.status == "imported":
+        raise ValueError("Imported datasets cannot be cancelled.")
+    uploaded = session.scalar(select(UploadedFile).where(UploadedFile.dataset_id == dataset_id))
+    dataset.status = "cancelled"
+    if uploaded is not None:
+        uploaded.validation_status = "cancelled"
+    session.commit()
+    return {"dataset_id": dataset_id, "status": dataset.status}
+
+
 def retrieve_dataframe(url: str, *, params: dict[str, Any] | None = None, timeout: int = 60) -> tuple[pd.DataFrame, bytes]:
     response = requests.get(url, params=params or {}, timeout=timeout)
     response.raise_for_status()
@@ -338,13 +380,76 @@ SORT_COLUMNS = {
     **RANGE_FILTERS,
 }
 
+STATE_NAMES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY",
+}
+
+DESCRIPTION_METRICS = {
+    "co2": "co2_mass", "carbon dioxide": "co2_mass", "co2 emissions": "co2_mass",
+    "so2": "so2_mass", "sulfur dioxide": "so2_mass", "so2 emissions": "so2_mass",
+    "nox": "nox_mass", "nitrogen oxides": "nox_mass", "nox emissions": "nox_mass",
+    "gross load": "gross_load", "heat input": "heat_input", "operating time": "operating_time",
+}
+
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def parse_search_description(description: str) -> dict[str, str]:
+    """Translate common project search wording into Explorer query parameters."""
+    text = re.sub(r"\s+", " ", description.strip().lower())
+    parsed: dict[str, str] = {}
+    for name, code in sorted(STATE_NAMES.items(), key=lambda item: -len(item[0])):
+        if re.search(rf"\b(?:in|from|within)\s+{re.escape(name)}\b", text):
+            parsed["state"] = code
+            break
+    state_code = re.search(r"\b(?:in|from|within)\s+([a-z]{2})\b", text)
+    if state_code:
+        parsed["state"] = state_code.group(1).upper()
+    year = re.search(r"\b(?:in|for|during)\s+(20\d{2})\b", text)
+    if year:
+        parsed["reporting_year"] = year.group(1)
+    for fuel in ("natural gas", "coal", "oil", "biomass", "petroleum coke"):
+        if re.search(rf"\b{re.escape(fuel)}(?:[- ]fired)?\b", text):
+            parsed["primary_fuel"] = fuel
+            break
+    metric_pattern = "|".join(sorted((re.escape(name) for name in DESCRIPTION_METRICS), key=len, reverse=True))
+    comparison = r"(greater than|more than|above|over|at least|less than|below|under|at most|<=|>=|<|>)"
+    match = re.search(rf"(?P<metric>{metric_pattern})\s+(?:emissions\s+)?{comparison}\s*([\d,]+(?:\.\d+)?)", text)
+    if match:
+        metric = DESCRIPTION_METRICS[match.group("metric")]
+        operator = match.group(2)
+        bound = match.group(3).replace(",", "")
+        suffix = "max" if operator in {"less than", "below", "under", "at most", "<", "<="} else "min"
+        parsed[f"{metric}_{suffix}"] = bound
+    if not parsed:
+        raise ValueError("Description did not contain a supported state, year, fuel, or metric condition.")
+    return parsed
+
+
+def normalized_search_args(args: dict[str, Any]) -> dict[str, Any]:
+    description = str(args.get("description") or "").strip()
+    parsed = parse_search_description(description) if description else {}
+    explicit = {key: value for key, value in args.items() if key != "description" and str(value).strip()}
+    return {**parsed, **explicit}
+
+
 def annual_filters(args: dict[str, Any]) -> list[Any]:
     """Translate search arguments into SQL conditions; raise ValueError for invalid numbers."""
+    args = normalized_search_args(args)
     filters: list[Any] = []
     for arg, field in EXACT_TEXT_FILTERS.items():
         value = str(args.get(arg) or "").strip()
@@ -390,6 +495,7 @@ def _annual_base_query(*columns: Any) -> Select[Any]:
 
 def build_annual_query(args: dict[str, Any]) -> Select[Any]:
     query = _annual_base_query(AnnualRecord, Unit, Facility).where(*annual_filters(args))
+    args = normalized_search_args(args)
     return query.order_by(*annual_order(args))
 
 

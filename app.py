@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, desc, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from data_service import SOURCE_DEFINITIONS, build_annual_query, count_annual_records, ingest_dataframe, read_dataframe, retrieve_dataframe
-from models import AnnualRecord, Base, Dataset, Facility, Unit
+from data_service import SOURCE_DEFINITIONS, RANGE_FILTERS, annual_filters, approve_uploaded_dataset, build_annual_query, cancel_uploaded_dataset, count_annual_records, ingest_dataframe, normalized_search_args, read_dataframe, retrieve_dataframe
+from models import AnnualRecord, Base, DataProvenance, Dataset, Facility, Unit, UploadValidationError
 
 
 def _json_value(value: Any) -> Any:
@@ -52,6 +52,23 @@ def _record_dict(record: AnnualRecord, unit: Unit, facility: Facility) -> dict[s
     }
 
 
+def _csv_file(rows: list[dict[str, Any]], filename: str) -> Any:
+    output = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(output, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return send_file(io.BytesIO(output.getvalue().encode("utf-8")), mimetype="text/csv", as_attachment=True, download_name=filename)
+
+
+def _dataset_query(dataset_id: int) -> Any:
+    return select(AnnualRecord, Unit, Facility).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility).where(AnnualRecord.dataset_id == dataset_id).order_by(AnnualRecord.reporting_year, Facility.facility_name, Unit.epa_unit_id)
+
+
+def _annual_base_query_for_unit(facility_id: str, unit_id: str) -> Any:
+    return select(AnnualRecord, Unit, Facility).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility).where(Facility.epa_facility_id == facility_id, Unit.epa_unit_id == unit_id).order_by(AnnualRecord.reporting_year)
+
+
 def create_app(database_url: str | None = None) -> Flask:
     app = Flask(__name__)
     app.config["DATABASE_URL"] = database_url or "sqlite:///epa_data.db"
@@ -65,6 +82,10 @@ def create_app(database_url: str | None = None) -> Flask:
     @app.get("/")
     def index() -> Any:
         return render_template("index.html")
+
+    @app.get("/unit/<facility_id>/<unit_id>")
+    def unit_detail_page(facility_id: str, unit_id: str) -> Any:
+        return render_template("unit_detail.html", facility_id=facility_id, unit_id=unit_id)
 
     @app.get("/api")
     def api_index() -> Any:
@@ -132,6 +153,23 @@ def create_app(database_url: str | None = None) -> Flask:
             app.logger.exception("Upload failed")
             return jsonify({"error": "Upload could not be processed", "detail": str(exc)}), 500
 
+    @app.post("/api/data/upload/<int:dataset_id>/approve")
+    def approve_upload(dataset_id: int) -> Any:
+        try:
+            with SessionLocal() as session:
+                result = approve_uploaded_dataset(session, dataset_id)
+            return jsonify(result), 200 if result["status"] == "imported" else 422
+        except (ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/data/upload/<int:dataset_id>/cancel")
+    def cancel_upload(dataset_id: int) -> Any:
+        try:
+            with SessionLocal() as session:
+                return jsonify(cancel_uploaded_dataset(session, dataset_id))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
     @app.post("/api/data/retrieve")
     def retrieve_data() -> Any:
         payload = request.get_json(silent=True) or {}
@@ -157,9 +195,12 @@ def create_app(database_url: str | None = None) -> Flask:
         if not api_key:
             return jsonify({"error": "EPA_API_KEY is not configured on the server."}), 503
         params = dict(payload.get("params") or {})
+        if "reporting_year" in params and "year" not in params:
+            params["year"] = params["reporting_year"]
         payload["provenance_params"] = dict(params)
         params["api_key"] = api_key
         payload["params"] = params
+        payload.setdefault("url", SOURCE_DEFINITIONS["epa-campd"]["default_endpoint"])
         payload.setdefault("source_name", SOURCE_DEFINITIONS["epa-campd"]["name"])
         with app.test_request_context("/api/data/retrieve", method="POST", json=payload):
             return retrieve_data()
@@ -175,7 +216,10 @@ def create_app(database_url: str | None = None) -> Flask:
                 total = count_annual_records(session, args)
                 rows = session.execute(query.limit(limit).offset(offset)).all()
                 data = [_record_dict(record, unit, facility) for record, unit, facility in rows]
-                return jsonify({"count": len(data), "total": total, "limit": limit, "offset": offset, "records": data})
+                interpreted = normalized_search_args(args)
+                interpreted.pop("limit", None)
+                interpreted.pop("offset", None)
+                return jsonify({"count": len(data), "total": total, "limit": limit, "offset": offset, "records": data, "interpreted_filters": interpreted})
         except (ValueError, TypeError) as exc:
             return jsonify({"error": f"Invalid query parameter: {exc}"}), 400
 
@@ -190,13 +234,85 @@ def create_app(database_url: str | None = None) -> Flask:
             return jsonify({"error": f"Invalid query parameter: {exc}"}), 400
         with SessionLocal() as session:
             rows = session.execute(query).all()
-        output = io.StringIO()
         records = [_record_dict(record, unit, facility) for record, unit, facility in rows]
-        if records:
-            writer = csv.DictWriter(output, fieldnames=list(records[0]))
-            writer.writeheader()
-            writer.writerows(records)
-        return send_file(io.BytesIO(output.getvalue().encode("utf-8")), mimetype="text/csv", as_attachment=True, download_name="annual-records.csv")
+        return _csv_file(records, "annual-records.csv")
+
+    @app.get("/api/datasets/<int:dataset_id>.csv")
+    def dataset_csv(dataset_id: int) -> Any:
+        with SessionLocal() as session:
+            query = _dataset_query(dataset_id)
+            rows = session.execute(query).all()
+        return _csv_file([_record_dict(record, unit, facility) for record, unit, facility in rows], f"dataset-{dataset_id}.csv")
+
+    @app.get("/api/uploads/<int:dataset_id>/errors.csv")
+    def upload_errors_csv(dataset_id: int) -> Any:
+        with SessionLocal() as session:
+            rows = session.scalars(select(UploadValidationError).join(UploadValidationError.uploaded_file).where(UploadValidationError.uploaded_file.has(dataset_id=dataset_id)).order_by(UploadValidationError.source_row_number)).all()
+        records = [{"source_row_number": row.source_row_number, "column_name": row.column_name, "error_code": row.error_code, "error_message": row.error_message, "raw_value": row.raw_value} for row in rows]
+        return _csv_file(records, f"dataset-{dataset_id}-validation-errors.csv")
+
+    @app.get("/api/datasets/<int:dataset_id>/provenance.csv")
+    def provenance_csv(dataset_id: int) -> Any:
+        with SessionLocal() as session:
+            rows = session.scalars(select(DataProvenance).where(DataProvenance.dataset_id == dataset_id).order_by(DataProvenance.retrieval_date)).all()
+        records = [{"source_name": row.source_name, "source_url_or_api": row.source_url_or_api, "retrieval_method": row.retrieval_method, "retrieval_date": _json_value(row.retrieval_date), "query_parameters": row.query_parameters, "reporting_year": row.reporting_year, "source_version": row.source_version, "checksum": row.checksum} for row in rows]
+        return _csv_file(records, f"dataset-{dataset_id}-provenance.csv")
+
+    @app.get("/api/units/<facility_id>/<unit_id>")
+    def unit_detail(facility_id: str, unit_id: str) -> Any:
+        with SessionLocal() as session:
+            rows = session.execute(_annual_base_query_for_unit(facility_id, unit_id)).all()
+        if not rows:
+            return jsonify({"error": "Unit was not found."}), 404
+        facility = rows[0][2]
+        unit = rows[0][1]
+        return jsonify({"facility": {"facility_id": facility.epa_facility_id, "facility_name": facility.facility_name, "state": facility.state, "county": facility.county, "latitude": facility.latitude, "longitude": facility.longitude}, "unit": {"unit_id": unit.epa_unit_id, "unit_type": unit.unit_type, "primary_fuel": unit.primary_fuel, "secondary_fuel": unit.secondary_fuel, "operating_date": _json_value(unit.operating_date), "retirement_date": _json_value(unit.retirement_date)}, "records": [_record_dict(record, unit, facility) for record, unit, facility in rows]})
+
+    @app.get("/api/rankings")
+    def rankings() -> Any:
+        group_by = request.args.get("group_by", "unit")
+        metric = request.args.get("metric", "co2_mass")
+        try:
+            limit = min(max(int(request.args.get("limit", 10)), 1), 100)
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+        if group_by not in {"facility", "state", "unit"}:
+            return jsonify({"error": "group_by must be facility, state, or unit"}), 400
+        if metric not in RANGE_FILTERS:
+            return jsonify({"error": f"unsupported metric '{metric}'"}), 400
+        value = func.sum(RANGE_FILTERS[metric]).label("value")
+        with SessionLocal() as session:
+            if group_by == "state":
+                query = select(Facility.state.label("group_key"), value).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility).group_by(Facility.state)
+            elif group_by == "facility":
+                query = select(Facility.epa_facility_id.label("group_key"), Facility.facility_name, Facility.state, value).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility).group_by(Facility.facility_id).group_by(Facility.epa_facility_id, Facility.facility_name, Facility.state)
+            else:
+                query = select(Facility.epa_facility_id.label("facility_id"), Facility.facility_name, Unit.epa_unit_id.label("unit_id"), Facility.state, value).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility).group_by(Unit.unit_id).group_by(Facility.epa_facility_id, Facility.facility_name, Unit.epa_unit_id, Facility.state)
+            rows = session.execute(query.order_by(desc(value)).limit(limit)).all()
+        return jsonify({"group_by": group_by, "metric": metric, "results": [dict(row._mapping) for row in rows]})
+
+    @app.get("/api/compare")
+    def compare() -> Any:
+        facility_ids = [value.strip() for value in request.args.get("facility_ids", "").split(",") if value.strip()]
+        unit_ids = [value.strip() for value in request.args.get("unit_ids", "").split(",") if value.strip()]
+        if not facility_ids and not unit_ids:
+            return jsonify({"error": "facility_ids or unit_ids is required"}), 400
+        filters: dict[str, Any] = {}
+        if request.args.get("reporting_year"):
+            filters["reporting_year"] = request.args["reporting_year"]
+        try:
+            query = select(AnnualRecord, Unit, Facility).select_from(AnnualRecord).join(AnnualRecord.unit).join(Unit.facility)
+            if facility_ids:
+                query = query.where(Facility.epa_facility_id.in_(facility_ids))
+            if unit_ids:
+                query = query.where(Unit.epa_unit_id.in_(unit_ids))
+            if filters:
+                query = query.where(*annual_filters(filters))
+            with SessionLocal() as session:
+                rows = session.execute(query.order_by(Facility.facility_name, Unit.epa_unit_id, AnnualRecord.reporting_year)).all()
+            return jsonify({"count": len(rows), "records": [_record_dict(record, unit, facility) for record, unit, facility in rows]})
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid comparison parameter: {exc}"}), 400
 
     @app.get("/api/facilities")
     def facilities() -> Any:

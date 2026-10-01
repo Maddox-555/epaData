@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unit detail - epaData</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">epaData</div>
+    <a class="nav-link" href="/">Back to Explorer</a>
+  </header>
+  <main class="container">
+    <section class="panel" id="unit-detail">
+      <h1>Unit detail</h1>
+      <p class="panel-desc" id="unit-summary">Loading unit history...</p>
+      <p><a class="secondary download-link" id="unit-download" href="#">Download this unit as CSV</a></p>
+      <div class="table-responsive">
+        <table class="table">
+          <thead><tr><th>Year</th><th>Operating time</th><th>Gross load</th><th>Heat input</th><th>CO₂</th><th>SO₂</th><th>NOx</th></tr></thead>
+          <tbody id="unit-records"></tbody>
+        </table>
+      </div>
+      <p class="status" id="unit-status"></p>
+    </section>
+  </main>
+  <script>
+    const summary = document.getElementById("unit-summary");
+    const body = document.getElementById("unit-records");
+    const status = document.getElementById("unit-status");
+    const format = value => value === null || value === undefined ? "-" : Number(value).toLocaleString(undefined, {maximumFractionDigits: 1});
+    fetch(`/api/units/{{ facility_id|urlencode }}/{{ unit_id|urlencode }}`)
+      .then(response => response.json().then(data => ({ok: response.ok, data})))
+      .then(({ok, data}) => {
+        if (!ok) throw new Error(data.error || "Unit could not be loaded.");
+        summary.textContent = `${data.facility.facility_name} (${data.facility.facility_id}) - Unit ${data.unit.unit_id} - ${data.facility.state}`;
+        document.getElementById("unit-download").href = `/api/annual-records.csv?facility_id=${encodeURIComponent(data.facility.facility_id)}&unit_id=${encodeURIComponent(data.unit.unit_id)}`;
+        data.records.forEach(record => {
+          const row = document.createElement("tr");
+          [record.reporting_year, record.operating_time, record.gross_load, record.heat_input, record.co2_mass, record.so2_mass, record.nox_mass].forEach((value, index) => {
+            const cell = document.createElement("td");
+            cell.textContent = index === 0 ? value : format(value);
+            row.appendChild(cell);
+          });
+          body.appendChild(row);
+        });
+      })
+      .catch(error => { status.textContent = error.message; });
+  </script>
+</body>
+</html>

@@ -67,6 +67,9 @@ body {
   gap: 0.5rem;
 }
 
+.nav-link { color: #d1fae5; font-weight: 600; text-decoration: none; }
+.nav-link:hover { color: white; }
+
 .nav button {
   background: transparent;
   border: none;
@@ -410,6 +413,14 @@ button { font-family: inherit; }
   border: 1px solid #bfdbfe;
 }
 .status:empty { display: none; }
+
+.panel-note, .form-field small { color: var(--text-muted); font-size: 0.9rem; }
+.panel-note { margin-top: 1rem; }
+.download-list { display: grid; gap: 1rem; }
+.download-item { border-top: 1px solid var(--border-light); padding-top: 1rem; }
+.download-item h2 { font-size: 1rem; margin-bottom: 0.75rem; }
+.download-link { margin-right: 0.5rem; text-decoration: none; }
+.upload-report { white-space: pre-wrap; max-height: 18rem; overflow: auto; margin-top: 1rem; color: var(--text-muted); }
 
 .footer {
   text-align: center;

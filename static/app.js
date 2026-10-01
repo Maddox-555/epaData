@@ -3,7 +3,8 @@ const views = {
   retrieval: document.getElementById("view-retrieval"),
   upload: document.getElementById("view-upload"),
   explorer: document.getElementById("view-explorer"),
-  datasets: document.getElementById("view-datasets")
+  datasets: document.getElementById("view-datasets"),
+  downloads: document.getElementById("view-downloads")
 };
 
 function showView(name) {
@@ -81,7 +82,14 @@ function renderResults(data) {
     RESULT_COLUMNS.forEach((column, index) => {
       const td = document.createElement("td");
       const value = column(row);
-      td.textContent = value === null || value === undefined || value === "" ? "—" : value;
+      if (index === 0) {
+        const link = document.createElement("a");
+        link.href = `/unit/${encodeURIComponent(row.facility_id)}/${encodeURIComponent(row.unit_id)}`;
+        link.textContent = value;
+        td.appendChild(link);
+      } else {
+        td.textContent = value === null || value === undefined || value === "" ? "—" : value;
+      }
       if (index >= NUMERIC_COLUMN_START) td.className = "text-right";
       tr.appendChild(td);
     });
@@ -173,6 +181,11 @@ restoreSearchFromUrl();
 
 const uploadForm = document.getElementById("upload-form");
 const uploadStatus = document.getElementById("upload-status");
+const uploadReport = document.getElementById("upload-report");
+const uploadActions = document.getElementById("upload-actions");
+const approveUploadBtn = document.getElementById("approve-upload");
+const cancelUploadBtn = document.getElementById("cancel-upload");
+let pendingDatasetId = null;
 
 uploadForm.addEventListener("submit", event => {
   event.preventDefault();
@@ -185,11 +198,33 @@ uploadForm.addEventListener("submit", event => {
     .then(r => r.json())
     .then(data => {
       uploadStatus.textContent = data.status || data.error || "Upload completed.";
+      uploadReport.textContent = data.validation ? JSON.stringify({validation: data.validation, errors: data.errors || []}, null, 2) : "";
+      pendingDatasetId = data.dataset_id && data.status === "pending" ? data.dataset_id : null;
+      uploadActions.hidden = !pendingDatasetId;
+      if (data.errors && data.errors.length) uploadStatus.textContent += ` ${data.errors.length} data-quality issue(s) must be resolved before approval.`;
     })
     .catch(() => {
       uploadStatus.textContent = "Upload failed.";
     });
 });
+
+function finishUploadAction(url, message) {
+  fetch(url, {method: "POST"})
+    .then(r => r.json().then(data => ({ok: r.ok, data})))
+    .then(({ok, data}) => {
+      uploadStatus.textContent = ok ? (data.status || message) : (data.error || "Upload action failed.");
+      if (ok) {
+        pendingDatasetId = null;
+        uploadActions.hidden = true;
+        loadDatasets();
+        loadDownloads();
+      }
+    })
+    .catch(() => { uploadStatus.textContent = "Upload action failed."; });
+}
+
+approveUploadBtn.addEventListener("click", () => finishUploadAction(`/api/data/upload/${pendingDatasetId}/approve`, "Upload approved."));
+cancelUploadBtn.addEventListener("click", () => finishUploadAction(`/api/data/upload/${pendingDatasetId}/cancel`, "Upload cancelled."));
 
 const datasetsBody = document.getElementById("datasets-body");
 
@@ -215,7 +250,33 @@ function loadDatasets() {
     });
 }
 
+const downloadList = document.getElementById("download-list");
+
+function loadDownloads() {
+  fetch("/api/datasets")
+    .then(r => r.json())
+    .then(rows => {
+      downloadList.replaceChildren();
+      rows.forEach(row => {
+        const section = document.createElement("section");
+        section.className = "download-item";
+        const title = document.createElement("h2");
+        title.textContent = `${row.dataset_name} (${row.status})`;
+        section.appendChild(title);
+        [[`/api/datasets/${row.dataset_id}.csv`, "Complete records"], [`/api/uploads/${row.dataset_id}/errors.csv`, "Validation errors"], [`/api/datasets/${row.dataset_id}/provenance.csv`, "Provenance"]].forEach(([href, label]) => {
+          const link = document.createElement("a");
+          link.className = "secondary download-link";
+          link.href = href;
+          link.textContent = label;
+          section.appendChild(link);
+        });
+        downloadList.appendChild(section);
+      });
+    });
+}
+
 loadDatasets();
+loadDownloads();
 
 const retrievalForm = document.getElementById("retrieval-form");
 const retrievalStatus = document.getElementById("retrieval-status");

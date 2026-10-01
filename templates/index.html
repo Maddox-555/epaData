@@ -16,6 +16,7 @@
       <button data-view="upload">Upload</button>
       <button data-view="explorer">Explorer</button>
       <button data-view="datasets">Datasets</button>
+      <button data-view="downloads">Downloads</button>
     </nav>
   </header>
 
@@ -72,6 +73,10 @@
             <input name="reporting_year" type="number">
           </div>
           <div class="form-field">
+            <label>Facility ID</label>
+            <input name="facility_id" type="text">
+          </div>
+          <div class="form-field">
             <label>State</label>
             <input name="state" type="text">
           </div>
@@ -83,6 +88,9 @@
             <label>Unit Type</label>
             <input name="unit_type" type="text">
           </div>
+          <div class="form-field"><label>SO₂ Control</label><input name="so2_control_information"></div>
+          <div class="form-field"><label>NOx Control</label><input name="nox_control_information"></div>
+          <div class="form-field"><label>PM Control</label><input name="pm_control_information"></div>
 
           <button class="primary full" type="submit">Retrieve from CAMPD</button>
         </form>
@@ -100,13 +108,18 @@
         <form id="upload-form" enctype="multipart/form-data">
           <div class="form-field">
             <label>Select File</label>
-            <input id="file" name="file" type="file" accept=".csv,.xlsx">
+            <input id="file" name="file" type="file" accept=".csv,.xlsx,.xls">
           </div>
 
           <button class="primary full" type="submit">Upload & Validate</button>
         </form>
 
         <div id="upload-status" class="status"></div>
+        <pre id="upload-report" class="upload-report"></pre>
+        <div id="upload-actions" class="form-actions" hidden>
+          <button class="primary" type="button" id="approve-upload">Approve Import</button>
+          <button class="secondary" type="button" id="cancel-upload">Cancel Import</button>
+        </div>
       </div>
     </section>
 
@@ -117,6 +130,11 @@
         <p class="panel-desc">Search annual unit records. Filters combine with AND; text filters ignore case, and name, fuel, type, and control filters match partial text. Leave a field blank to skip it.</p>
 
         <form id="search-form" class="form-grid">
+          <div class="form-field full description-search">
+            <label for="search-description">Search by description</label>
+            <input id="search-description" name="description" placeholder="coal-fired units in Kentucky in 2025 with CO2 emissions greater than 500000">
+            <small>Describe a state, year, fuel, and/or metric threshold in plain language. Structured filters below override matching phrases.</small>
+          </div>
           <h3 class="form-section">Identification</h3>
           <div class="form-field"><label>Facility ID</label><input name="facility_id"></div>
           <div class="form-field"><label>Facility Name</label><input name="facility_name"></div>
@@ -187,9 +205,10 @@
           <div class="form-actions full">
             <button class="primary" type="submit">Search</button>
             <button class="secondary" type="button" id="clear-filters">Clear</button>
-            <button class="primary" type="button" id="download-csv">Download CSV</button>
+            <button class="primary" type="button" id="download-csv">Download Database Results</button>
           </div>
         </form>
+        <p class="panel-note">Downloads use records already stored in the local database. An EPA API key is only needed for a new live CAMPD retrieval.</p>
       </div>
 
       <div class="panel">
@@ -249,6 +268,15 @@
           </thead>
           <tbody id="datasets-body"></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- DOWNLOADS -->
+    <section id="view-downloads" class="view">
+      <div class="panel">
+        <h1>Downloads</h1>
+        <p class="panel-desc">Download complete imported datasets, validation reports, and source provenance as CSV. Search-result downloads remain available from the Explorer.</p>
+        <div id="download-list" class="download-list"></div>
       </div>
     </section>
 
