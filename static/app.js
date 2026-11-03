@@ -52,6 +52,7 @@ const NUMERIC_COLUMN_START = 6;
 
 let lastResponse = null;
 let lastSearchParams = null;
+let emissionsChart = null; // NEW: Holds the chart instance
 
 function formatNumber(value) {
   if (value === null || value === undefined) return "—";
@@ -121,12 +122,14 @@ function runSearch(offset = 0, baseParams = null) {
     .then(({ ok, data }) => {
       if (!ok) throw new Error(data.error || "Search failed.");
       renderResults(data);
+      renderChart(data.records); // NEW: Draw chart on success
     })
     .catch(error => {
       lastResponse = null;
       resultsBody.replaceChildren();
       pagination.hidden = true;
       resultsCount.textContent = error.message;
+      renderChart([]); // NEW: Clear chart on error
     });
 }
 
@@ -175,6 +178,7 @@ clearFiltersBtn.addEventListener("click", () => {
   pagination.hidden = true;
   resultsCount.textContent = "Run a search to see results.";
   history.replaceState(null, "", window.location.pathname);
+  renderChart([]); // NEW: Clear chart when filters are cleared
 });
 
 downloadCsvBtn.addEventListener("click", () => {
@@ -317,3 +321,50 @@ retrievalForm.addEventListener("submit", event => {
       retrievalStatus.textContent = "Retrieval failed.";
     });
 });
+
+// --- Visualization Logic ---
+function renderChart(records) {
+  const chartWrapper = document.getElementById('chart-wrapper');
+  
+  if (!records || records.length === 0) {
+    if (chartWrapper) chartWrapper.style.display = 'none';
+    return;
+  }
+  if (chartWrapper) chartWrapper.style.display = 'block';
+  if (emissionsChart) {
+    emissionsChart.destroy();
+  }
+  const chartData = records.slice(0, 15);
+  const labels = chartData.map(r => r.facility_name || `Unit ${r.unit_id}`);
+  const co2Data = chartData.map(r => r.co2_mass || 0);
+  const canvas = document.getElementById('emissionsChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  emissionsChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'CO₂ Emissions (short tons)',
+        data: co2Data,
+        backgroundColor: 'rgba(16, 185, 129, 0.8)',
+        borderColor: '#059669',
+        borderWidth: 1,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+        title: {
+          display: true,
+          text: 'Top Results: CO₂ Emissions',
+          color: '#e6edf3',
+          font: { size: 16 }
+        }
+      }
+    }
+  });
+}
