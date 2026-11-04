@@ -5,6 +5,7 @@
   <title>epaData – Environmental Data Platform</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
 <body>
@@ -215,6 +216,11 @@
         <div class="results-header">
           <h2>Search Results</h2>
           <div id="results-count" class="results-count">Run a search to see results.</div>
+        </div>
+
+        <!-- Interactive Chart Container -->
+        <div class="chart-container" id="chart-wrapper" style="position: relative; height: 350px; width: 100%; margin-bottom: 2rem; display: none;">
+          <canvas id="emissionsChart"></canvas>
         </div>
 
         <div class="table-responsive">
