@@ -5,15 +5,17 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
-from sqlalchemy import Select, desc, func, select
+from sqlalchemy import Select, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from models import (
@@ -21,6 +23,7 @@ from models import (
     DataProvenance,
     Dataset,
     Facility,
+    TraciFactor,
     Unit,
     UploadedFile,
     UploadValidationError,
@@ -36,12 +39,6 @@ SOURCE_DEFINITIONS = {
         "description": "EPA Clean Air Markets Division annual emissions and generation data.",
         "default_endpoint": "https://api.epa.gov/easey/emissions-mgmt/emissions/apportioned/annual",
         "supported_import": True,
-    },
-    "nasa-power": {
-        "name": "NASA POWER",
-        "description": "Monthly regional climate data summarized to annual facility climate records.",
-        "default_endpoint": "https://power.larc.nasa.gov/api/temporal/monthly/regional",
-        "supported_import": False,
     },
     "traci": {
         "name": "TRACI",
@@ -638,3 +635,329 @@ def build_annual_query(args: dict[str, Any]) -> Select[Any]:
 def count_annual_records(session: Session, args: dict[str, Any]) -> int:
     query = _annual_base_query(func.count(AnnualRecord.annual_record_id)).where(*annual_filters(args))
     return int(session.scalar(query) or 0)
+
+
+ANALYSIS_METRICS = {
+    "operating_time": "Operating time",
+    "gross_load": "Gross load",
+    "steam_load": "Steam load",
+    "heat_input": "Heat input",
+    "co2_mass": "CO2 mass",
+    "so2_mass": "SO2 mass",
+    "nox_mass": "NOx mass",
+    "co2_intensity": "CO2 intensity",
+    "so2_intensity": "SO2 intensity",
+    "nox_intensity": "NOx intensity",
+    "heat_rate": "Heat rate",
+}
+
+TRACI_POLLUTANT_ALIASES = {
+    "co2": {"co2", "carbon dioxide", "carbon-dioxide", "co2_mass"},
+    "so2": {"so2", "sulfur dioxide", "sulfur-dioxide", "so2_mass"},
+    "nox": {"nox", "nitrogen oxides", "nitrogen-oxides", "nox_mass"},
+}
+
+
+def _metric_value(record: AnnualRecord, metric: str) -> float | None:
+    if metric in {"co2_intensity", "so2_intensity", "nox_intensity"}:
+        raw_metric = metric.replace("_intensity", "_mass")
+        raw_value = getattr(record, raw_metric)
+        gross_load = record.gross_load
+        if raw_value is None or gross_load in (None, 0):
+            return None
+        value = float(raw_value) / float(gross_load)
+        return value if math.isfinite(value) else None
+    if metric == "heat_rate":
+        if record.heat_input is None or record.gross_load in (None, 0):
+            return None
+        value = float(record.heat_input) / float(record.gross_load)
+        return value if math.isfinite(value) else None
+    value = getattr(record, metric, None)
+    if value is None:
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Convert pandas/NumPy missing and non-finite values to JSON null."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        value = float(value)
+    if isinstance(value, (float, int)) and not isinstance(value, bool):
+        return value if math.isfinite(float(value)) else None
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    try:
+        if not hasattr(missing, "__len__") and bool(missing):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _json_safe_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: _json_safe_value(value) for key, value in record.items()}
+
+
+def _records_to_dataframe(rows: list[tuple[AnnualRecord, Unit, Facility]]) -> pd.DataFrame:
+    records: list[dict[str, Any]] = []
+    for record, unit, facility in rows:
+        item = {
+            "annual_record_id": record.annual_record_id,
+            "facility_id": facility.epa_facility_id,
+            "facility_name": facility.facility_name,
+            "state": facility.state,
+            "county": facility.county,
+            "latitude": facility.latitude,
+            "longitude": facility.longitude,
+            "unit_id": unit.epa_unit_id,
+            "primary_fuel": unit.primary_fuel,
+            "unit_type": unit.unit_type,
+            "reporting_year": record.reporting_year,
+            "operating_time": record.operating_time,
+            "gross_load": record.gross_load,
+            "steam_load": record.steam_load,
+            "heat_input": record.heat_input,
+            "co2_mass": record.co2_mass,
+            "so2_mass": record.so2_mass,
+            "nox_mass": record.nox_mass,
+            "so2_control_information": record.so2_control_information,
+            "nox_control_information": record.nox_control_information,
+            "pm_control_information": record.pm_control_information,
+            "program_code": record.program_code,
+            "co2_intensity": _metric_value(record, "co2_intensity"),
+            "so2_intensity": _metric_value(record, "so2_intensity"),
+            "nox_intensity": _metric_value(record, "nox_intensity"),
+            "heat_rate": _metric_value(record, "heat_rate"),
+        }
+        records.append(item)
+    return pd.DataFrame(records)
+
+
+def _group_key_for_value(group_by: str, row: dict[str, Any]) -> str:
+    if group_by in {"facility", "facility_id"}:
+        return str(row.get("facility_id") or row.get("facility_name") or "unknown")
+    if group_by in {"unit", "unit_id"}:
+        return str(row.get("unit_id") or "unknown")
+    if group_by == "year":
+        return str(row.get("reporting_year") or "unknown")
+    if group_by == "fuel":
+        return str(row.get("primary_fuel") or "Unknown / missing")
+    if group_by == "unit_type":
+        return str(row.get("unit_type") or "Unknown / missing")
+    if group_by == "so2_control":
+        return str(row.get("so2_control_information") or "Unknown / missing")
+    if group_by == "nox_control":
+        return str(row.get("nox_control_information") or "Unknown / missing")
+    if group_by == "pm_control":
+        return str(row.get("pm_control_information") or "Unknown / missing")
+    if group_by == "program":
+        return str(row.get("program_code") or "Unknown / missing")
+    return str(row.get("state") or "unknown")
+
+
+def _summarize_numeric_series(values: list[float], *, missing: int = 0, total: int | None = None) -> dict[str, Any]:
+    total = total if total is not None else len(values) + missing
+    if not values:
+        return {"count": 0, "missing": missing, "total": total, "min": None, "max": None, "mean": None, "median": None, "stddev": None, "q1": None, "q3": None, "iqr": None, "percentiles": {}}
+    series = pd.Series(values)
+    q1 = float(series.quantile(0.25))
+    q3 = float(series.quantile(0.75))
+    return {
+        "count": int(len(values)),
+        "missing": int(missing),
+        "total": int(total),
+        "min": float(series.min()),
+        "max": float(series.max()),
+        "mean": float(series.mean()),
+        "median": float(series.median()),
+        "stddev": float(series.std(ddof=1)) if len(values) > 1 else 0.0,
+        "q1": q1,
+        "q3": q3,
+        "iqr": float(q3 - q1),
+        "percentiles": {str(percentile): float(series.quantile(percentile)) for percentile in (0.1, 0.25, 0.5, 0.75, 0.9, 0.95)},
+    }
+
+
+def build_analysis_dataset(session: Session, filters: dict[str, Any], *, limit: int = 250) -> dict[str, Any]:
+    query = build_annual_query(filters)
+    all_rows = session.execute(query).all()
+    rows = all_rows[:limit]
+    dataframe = _records_to_dataframe(rows)
+    metrics = [metric for metric in ANALYSIS_METRICS if metric in dataframe.columns]
+    values = [_json_safe_record(record) for record in dataframe.to_dict(orient="records")]
+    missing_summary: dict[str, Any] = {}
+    for metric in metrics:
+        metric_values = dataframe[metric].tolist()
+        missing_summary[metric] = sum(1 for item in metric_values if pd.isna(item))
+    selected_years = sorted({int(row["reporting_year"]) for row in values if row.get("reporting_year") is not None})
+    return {
+        "filters": normalized_search_args(filters),
+        "selected_record_count": len(all_rows),
+        "selected_facility_count": len({facility.epa_facility_id for _, _, facility in all_rows}),
+        "selected_unit_count": len({unit.unit_id for _, unit, _ in all_rows}),
+        "selected_years": sorted({record.reporting_year for record, _, _ in all_rows}),
+        "returned_record_count": len(values),
+        "available_variables": metrics,
+        "missing_values": missing_summary,
+        "records": values,
+    }
+
+
+def summarize_analysis_metric(session: Session, metric: str, filters: dict[str, Any] | None = None, *, group_by: str = "state") -> dict[str, Any]:
+    filters = filters or {}
+    if metric not in ANALYSIS_METRICS and metric not in {"value"}:
+        raise ValueError(f"unsupported metric '{metric}'")
+    query = build_annual_query(filters)
+    rows = session.execute(query).all()
+    dataframe = _records_to_dataframe(rows)
+    if metric == "value":
+        metrics = ["co2_mass", "so2_mass", "nox_mass"]
+        data = [float(value) for values in [dataframe[m].tolist() for m in metrics] for value in values if pd.notna(value)]
+        missing = sum(int(dataframe[m].isna().sum()) for m in metrics)
+    else:
+        if metric in dataframe.columns:
+            raw_values = dataframe[metric].tolist()
+            data = [float(value) for value in raw_values if pd.notna(value)]
+            missing = int(dataframe[metric].isna().sum())
+        else:
+            data = [float(_metric_value(record, metric)) for record, _, _ in rows if _metric_value(record, metric) is not None]
+            missing = len(rows) - len(data)
+    summary = _summarize_numeric_series(data, missing=missing, total=len(rows))
+    if group_by not in {"state", "facility", "facility_id", "unit", "unit_id", "year", "fuel", "unit_type", "so2_control", "nox_control", "pm_control", "program"}:
+        raise ValueError(f"unsupported grouping '{group_by}'")
+    group_column = {
+        "state": "state", "facility": "facility_id", "facility_id": "facility_id",
+        "unit": "unit_id", "unit_id": "unit_id", "year": "reporting_year",
+        "fuel": "primary_fuel", "unit_type": "unit_type",
+        "so2_control": "so2_control_information", "nox_control": "nox_control_information",
+        "pm_control": "pm_control_information", "program": "program_code",
+    }[group_by]
+    grouped_rows: list[dict[str, Any]] = []
+    if not dataframe.empty:
+        for label, group in dataframe.groupby(group_column, dropna=False):
+            if metric not in group.columns:
+                continue
+            raw_values = group[metric].tolist()
+            numeric = [float(value) for value in raw_values if pd.notna(value)]
+            grouped_rows.append({
+                "group_key": str(label),
+                "group_name": str(label) if pd.notna(label) else "Unknown / missing",
+                "count": len(numeric),
+                "missing": int(group[metric].isna().sum()),
+                "total": len(group),
+                **_summarize_numeric_series(numeric, missing=int(group[metric].isna().sum()), total=len(group)),
+            })
+    return {
+        "metric": metric,
+        "group_by": group_by,
+        "summary": summary,
+        "results": grouped_rows,
+    }
+
+
+def _normalize_impact_category(category: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", category.lower()).strip()
+    mapping = {
+        "global warming": "global warming",
+        "acidification": "acidification",
+        "smog formation": "smog formation",
+        "ozone depletion": "ozone depletion",
+        "particulate matter": "particulate matter",
+        "ecotoxicity": "ecotoxicity",
+        "human health": "human health",
+    }
+    return mapping.get(normalized, normalized)
+
+
+def _traci_lookup_factors(session: Session, pollutant: str | None = None, impact_category: str | None = None) -> list[TraciFactor]:
+    candidates = select(TraciFactor).where(TraciFactor.traci_version == "2.2")
+    if pollutant:
+        exact_names = {"co2": "carbon dioxide", "so2": "sulfur dioxide", "nox": "nitrogen oxides"}
+        canonical = exact_names.get(pollutant.lower(), pollutant.lower())
+        candidates = candidates.where(func.lower(TraciFactor.pollutant) == canonical)
+        candidates = candidates.where(func.lower(TraciFactor.geography).like("% air%"))
+    if impact_category:
+        category = _normalize_impact_category(impact_category)
+        candidates = candidates.where(func.lower(TraciFactor.impact_category).like(f"%{_escape_like(category)}%"))
+    return session.scalars(candidates).all()
+
+
+def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_category: str = "global warming", pollutant: str | None = None, group_by: str = "facility", normalize_by: str | None = None) -> dict[str, Any]:
+    category = _normalize_impact_category(impact_category)
+    rows = session.execute(build_annual_query(filters)).all()
+    if not rows:
+        return {"impact_category": category, "pollutant": pollutant, "group_by": group_by, "normalize_by": normalize_by, "factor_units": [], "traci_version": "2.2", "results": [], "total_impact": 0.0}
+    data = _records_to_dataframe(rows)
+    chosen_pollutants = [pollutant] if pollutant else ["co2", "so2", "nox"]
+    factor_lookup: dict[str, list[TraciFactor]] = {}
+    for current in chosen_pollutants:
+        factor_lookup[current] = _traci_lookup_factors(session, current, category)
+    grouped: dict[str, dict[str, Any]] = {}
+    factor_units: set[str] = set()
+    for row in (_json_safe_record(record) for record in data.to_dict(orient="records")):
+        group_key = _group_key_for_value(group_by, row)
+        group_entry = grouped.setdefault(group_key, {"group_key": group_key, "facility_name": row.get("facility_name"), "state": row.get("state"), "unit_id": row.get("unit_id"), "reporting_year": row.get("reporting_year"), "total_impact": 0.0, "records": 0})
+        impact_total = 0.0
+        for current in chosen_pollutants:
+            source_metric = f"{current}_mass"
+            if current not in TRACI_POLLUTANT_ALIASES or source_metric not in row or row.get(source_metric) is None:
+                continue
+            candidate_factors = factor_lookup.get(current, [])
+            if not candidate_factors:
+                continue
+            factor = candidate_factors[0]
+            factor_value = float(factor.characterization_factor)
+            mass_kg = float(row[source_metric]) * 907.18474
+            impact_total += mass_kg * factor_value
+            group_entry.setdefault("factors", []).append({
+                "pollutant": factor.pollutant,
+                "impact_category": factor.impact_category,
+                "traci_version": factor.traci_version,
+                "geography": factor.geography,
+                "characterization_factor": factor_value,
+                "factor_unit": factor.factor_unit,
+            })
+            factor_units.add(factor.factor_unit)
+        if impact_total:
+            group_entry["total_impact"] = float(group_entry["total_impact"]) + impact_total
+            group_entry["records"] += 1
+        if normalize_by and normalize_by in row and row.get(normalize_by) not in (None, 0):
+            group_entry[f"impact_per_{normalize_by}"] = float(group_entry.get(f"impact_per_{normalize_by}", 0.0)) + impact_total / float(row[normalize_by])
+    results: list[dict[str, Any]] = []
+    for entry in grouped.values():
+        result = {
+            "group_key": entry["group_key"],
+            "facility_name": entry.get("facility_name"),
+            "state": entry.get("state"),
+            "unit_id": entry.get("unit_id"),
+            "reporting_year": entry.get("reporting_year"),
+            "impact": round(float(entry["total_impact"]), 6),
+            "factors": entry.get("factors", []),
+        }
+        if normalize_by and f"impact_per_{normalize_by}" in entry:
+            result[f"impact_per_{normalize_by}"] = round(float(entry[f"impact_per_{normalize_by}"]), 6)
+        results.append(result)
+    return {"impact_category": category, "pollutant": pollutant, "group_by": group_by, "normalize_by": normalize_by, "factor_units": sorted(factor_units), "traci_version": "2.2", "results": results, "total_impact": round(sum(item["impact"] for item in results), 6)}
+
+
+def compare_analysis_groups(session: Session, metric: str, filters: dict[str, Any], group_a: str, group_b: str, group_by: str = "state") -> dict[str, Any]:
+    summary = summarize_analysis_metric(session, metric, filters, group_by=group_by)
+    lookup = {row["group_key"]: row for row in summary["results"]}
+    if group_a not in lookup or group_b not in lookup:
+        raise ValueError("Both comparison groups must exist in the selected data.")
+    first, second = lookup[group_a], lookup[group_b]
+    absolute_difference = float(second["mean"] - first["mean"])
+    percentage_difference = None if first["mean"] == 0 else absolute_difference / abs(float(first["mean"])) * 100
+    return {
+        "metric": metric,
+        "group_by": group_by,
+        "group_a": first,
+        "group_b": second,
+        "absolute_difference": absolute_difference,
+        "percentage_difference": percentage_difference,
+    }

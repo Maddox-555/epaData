@@ -3,6 +3,7 @@ const views = {
   retrieval: document.getElementById("view-retrieval"),
   upload: document.getElementById("view-upload"),
   explorer: document.getElementById("view-explorer"),
+  analysis: document.getElementById("view-analysis"),
   datasets: document.getElementById("view-datasets"),
   downloads: document.getElementById("view-downloads")
 };
@@ -52,7 +53,6 @@ const NUMERIC_COLUMN_START = 6;
 
 let lastResponse = null;
 let lastSearchParams = null;
-let emissionsChart = null; // NEW: Holds the chart instance
 
 function formatNumber(value) {
   if (value === null || value === undefined) return "—";
@@ -187,6 +187,7 @@ downloadCsvBtn.addEventListener("click", () => {
 
 function restoreSearchFromUrl() {
   const params = new URLSearchParams(window.location.search);
+  if (params.get("analysis") === "1") return;
   if ([...params.keys()].length === 0) return;
   params.forEach((value, key) => {
     const field = searchForm.elements.namedItem(key);
@@ -322,49 +323,248 @@ retrievalForm.addEventListener("submit", event => {
     });
 });
 
-// --- Visualization Logic ---
-function renderChart(records) {
-  const chartWrapper = document.getElementById('chart-wrapper');
-  
-  if (!records || records.length === 0) {
-    if (chartWrapper) chartWrapper.style.display = 'none';
-    return;
-  }
-  if (chartWrapper) chartWrapper.style.display = 'block';
-  if (emissionsChart) {
-    emissionsChart.destroy();
-  }
-  const chartData = records.slice(0, 15);
-  const labels = chartData.map(r => r.facility_name || `Unit ${r.unit_id}`);
-  const co2Data = chartData.map(r => r.co2_mass || 0);
-  const canvas = document.getElementById('emissionsChart');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  emissionsChart = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        label: 'CO₂ Emissions (short tons)',
-        data: co2Data,
-        backgroundColor: 'rgba(16, 185, 129, 0.8)',
-        borderColor: '#059669',
-        borderWidth: 1,
-        borderRadius: 4
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'top' },
-        title: {
-          display: true,
-          text: 'Top Results: CO₂ Emissions',
-          color: '#e6edf3',
-          font: { size: 16 }
-        }
-      }
+// --- Analysis dashboard ---
+const analysisForm = document.getElementById("analysis-form");
+const impactForm = document.getElementById("impact-form");
+const analysisStatus = document.getElementById("analysis-status");
+const analysisCards = document.getElementById("analysis-cards");
+const comparisonForm = document.getElementById("comparison-form");
+const comparisonResult = document.getElementById("comparison-result");
+let currentAnalysisParams = new URLSearchParams();
+let currentAnalysisDataset = null;
+let currentAnalysisSummary = null;
+
+function analysisParams(form, includeMetric = true) {
+  const params = new URLSearchParams();
+  new FormData(form).forEach((value, key) => {
+    if (String(value).trim() !== "" && (includeMetric || !["metric", "group_by"].includes(key))) {
+      params.set(key, String(value).trim());
     }
   });
+  return params;
 }
+
+function renderStatCards(summary) {
+  const values = [
+    ["Count", summary.count],
+    ["Missing", summary.missing],
+    ["Minimum", summary.min],
+    ["Maximum", summary.max],
+    ["Mean", summary.mean],
+    ["Median", summary.median],
+    ["Std. deviation", summary.stddev],
+    ["Q1", summary.q1],
+    ["Q3", summary.q3],
+    ["IQR", summary.iqr],
+    ["P90", summary.percentiles && summary.percentiles["0.9"]],
+    ["P95", summary.percentiles && summary.percentiles["0.95"]]
+  ];
+  analysisCards.replaceChildren(...values.map(([label, value]) => {
+    const card = document.createElement("div");
+    card.className = "stat-card";
+    card.innerHTML = `<span>${label}</span><strong>${value === null || value === undefined ? "—" : formatNumber(value)}</strong>`;
+    return card;
+  }));
+}
+
+function plotLayout(title, xTitle, yTitle) {
+  return {
+    title: {text: title, font: {size: 17}},
+    paper_bgcolor: "white",
+    plot_bgcolor: "white",
+    margin: {t: 50, r: 25, b: 65, l: 70},
+    xaxis: {title: xTitle},
+    yaxis: {title: yTitle, gridcolor: "#e5e7eb"},
+    font: {color: "#1f2937"}
+  };
+}
+
+function renderSummary(summary, metric, groupBy, chartType, records) {
+  renderStatCards(summary.summary);
+  const rows = summary.results.slice().sort((a, b) => (b.mean ?? 0) - (a.mean ?? 0)).slice(0, 25);
+  const values = records.map(row => row[metric]).filter(value => value !== null && value !== undefined).map(Number);
+  let traces;
+  if (chartType === "histogram") {
+    traces = [{x: values, type: "histogram", marker: {color: "#10b981"}, hovertemplate: "%{x:,.3f}<extra></extra>"}];
+  } else if (chartType === "box") {
+    traces = [{y: values, type: "box", name: metric, marker: {color: "#10b981"}, boxmean: true}];
+  } else if (chartType === "scatter") {
+    const xMetric = metric === "gross_load" ? "heat_input" : "gross_load";
+    traces = [{x: records.map(row => row[xMetric]), y: records.map(row => row[metric]), mode: "markers", type: "scatter", text: records.map(row => row.facility_name), marker: {color: "#10b981", opacity: 0.7}}];
+  } else if (chartType === "correlation") {
+    const metricNames = ["operating_time", "gross_load", "heat_input", "co2_mass", "so2_mass", "nox_mass"];
+    const matrix = metricNames.map(first => metricNames.map(second => {
+      const pairs = records.filter(row => row[first] !== null && row[second] !== null);
+      if (pairs.length < 2) return 0;
+      const a = pairs.map(row => Number(row[first]));
+      const b = pairs.map(row => Number(row[second]));
+      const ma = a.reduce((s, v) => s + v, 0) / a.length;
+      const mb = b.reduce((s, v) => s + v, 0) / b.length;
+      const numerator = a.reduce((s, v, i) => s + (v - ma) * (b[i] - mb), 0);
+      const denominator = Math.sqrt(a.reduce((s, v) => s + (v - ma) ** 2, 0) * b.reduce((s, v) => s + (v - mb) ** 2, 0));
+      return denominator ? numerator / denominator : 0;
+    }));
+    traces = [{z: matrix, x: metricNames, y: metricNames, type: "heatmap", colorscale: "RdBu", zmin: -1, zmax: 1}];
+  } else if (chartType === "map") {
+    traces = [{
+      type: "scattergeo", mode: "markers",
+      lat: records.map(row => row.latitude).filter(value => value !== null),
+      lon: records.map(row => row.longitude).filter(value => value !== null),
+      text: records.filter(row => row.latitude !== null && row.longitude !== null).map(row => `${row.facility_name}: ${row[metric] ?? "missing"}`),
+      marker: {size: 8, color: records.filter(row => row.latitude !== null && row.longitude !== null).map(row => Number(row[metric] || 0)), colorscale: "Viridis", showscale: true}
+    }];
+  } else {
+    traces = [{
+      x: rows.map(row => row.group_name), y: rows.map(row => chartType === "line" ? row.mean : row.mean),
+      type: chartType === "line" ? "scatter" : "bar", mode: chartType === "line" ? "lines+markers" : undefined,
+      marker: {color: "#10b981"}, line: {color: "#10b981"},
+      hovertemplate: "%{x}<br>Mean: %{y:,.3f}<extra></extra>"
+    }];
+  }
+  const layout = plotLayout(`${metric} visualization`, groupBy, "Value");
+  if (chartType === "map") {
+    delete layout.xaxis;
+    delete layout.yaxis;
+    layout.geo = {scope: "usa", projection: {type: "albers usa"}, showland: true, landcolor: "#f3f4f6", showcountries: true};
+  }
+  Plotly.newPlot("summary-chart", traces, layout, {responsive: true, displaylogo: false});
+}
+
+function renderTrend(records, metric) {
+  const byYear = {};
+  records.forEach(row => {
+    const value = row[metric];
+    if (value !== null && value !== undefined) {
+      byYear[row.reporting_year] = byYear[row.reporting_year] || [];
+      byYear[row.reporting_year].push(Number(value));
+    }
+  });
+  const years = Object.keys(byYear).sort();
+  const means = years.map(year => byYear[year].reduce((sum, value) => sum + value, 0) / byYear[year].length);
+  Plotly.newPlot("trend-chart", [{
+    x: years, y: means, type: "scatter", mode: "lines+markers",
+    line: {color: "#2563eb"}, hovertemplate: "%{x}<br>Mean: %{y:,.3f}<extra></extra>"
+  }], plotLayout(`${metric} trend`, "Reporting year", "Mean value"), {responsive: true, displaylogo: false});
+}
+
+async function loadAnalysis() {
+  const params = analysisParams(analysisForm);
+  const chartType = analysisForm.elements.namedItem("chart_type").value;
+  params.delete("chart_type");
+  currentAnalysisParams = params;
+  const urlParams = new URLSearchParams(params);
+  urlParams.set("chart_type", chartType);
+  history.replaceState(null, "", `?analysis=1&${urlParams.toString()}`);
+  analysisStatus.textContent = "Loading analysis…";
+  try {
+    const [summaryResponse, datasetResponse] = await Promise.all([
+      fetch(`/api/analysis/summary?${params}`),
+      fetch(`/api/analysis/dataset?${params}&limit=1000`)
+    ]);
+    const summary = await summaryResponse.json();
+    const dataset = await datasetResponse.json();
+    if (!summaryResponse.ok) throw new Error(summary.error || "Summary request failed.");
+    if (!datasetResponse.ok) throw new Error(dataset.error || "Dataset request failed.");
+    currentAnalysisDataset = dataset;
+    currentAnalysisSummary = summary;
+    renderSummary(summary, params.get("metric"), params.get("group_by"), chartType, dataset.records);
+    renderTrend(dataset.records, params.get("metric"));
+    document.getElementById("analysis-record-count").textContent = dataset.selected_record_count.toLocaleString();
+    document.getElementById("analysis-facility-count").textContent = dataset.selected_facility_count.toLocaleString();
+    document.getElementById("analysis-unit-count").textContent = dataset.selected_unit_count.toLocaleString();
+    document.getElementById("analysis-year-count").textContent = dataset.selected_years.length.toLocaleString();
+    document.getElementById("analysis-variables").textContent = dataset.available_variables.join(", ");
+    const missing = Object.entries(dataset.missing_values).filter(([, value]) => value > 0);
+    document.getElementById("analysis-missing").textContent = missing.length ? missing.map(([name, value]) => `${name}: ${value}`).join(" • ") : "No missing values in the selected variables.";
+    analysisStatus.textContent = `${dataset.selected_record_count.toLocaleString()} records (${dataset.returned_record_count.toLocaleString()} plotted) across ${dataset.selected_facility_count.toLocaleString()} facilities and ${dataset.selected_years.length} years.`;
+  } catch (error) {
+    analysisStatus.textContent = error.message;
+    analysisCards.replaceChildren();
+  }
+}
+
+async function loadImpact() {
+  const analysisFilters = analysisParams(analysisForm, false);
+  const impactParams = analysisParams(impactForm);
+  ["state", "reporting_year_min", "reporting_year_max", "primary_fuel"].forEach(key => {
+    if (analysisFilters.has(key)) impactParams.set(key, analysisFilters.get(key));
+  });
+  const response = await fetch(`/api/analysis/impact?${impactParams}`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Impact request failed.");
+  const units = data.factor_units && data.factor_units.length ? data.factor_units.join("; ") : "No verified matching factor";
+  const normalization = data.normalize_by ? `; normalized by ${data.normalize_by}` : "";
+  document.getElementById("impact-total").textContent = `Total potential impact: ${formatNumber(data.total_impact)} ${units}${normalization} (TRACI ${data.traci_version})`;
+  const rows = data.results.slice().sort((a, b) => b.impact - a.impact).slice(0, 25);
+  Plotly.newPlot("impact-chart", [{
+    x: rows.map(row => row.group_key), y: rows.map(row => row.impact), type: "bar",
+    marker: {color: "#f59e0b"}, hovertemplate: "%{x}<br>Impact: %{y:,.3f}<extra></extra>"
+  }], plotLayout(`${data.impact_category} impact by ${data.group_by}`, data.group_by, "Potential impact"), {responsive: true, displaylogo: false});
+}
+
+analysisForm.addEventListener("submit", event => {
+  event.preventDefault();
+  loadAnalysis();
+});
+
+impactForm.addEventListener("submit", event => {
+  event.preventDefault();
+  loadImpact().catch(error => { document.getElementById("impact-total").textContent = error.message; });
+});
+
+document.getElementById("clear-analysis").addEventListener("click", () => {
+  analysisForm.reset();
+  history.replaceState(null, "", window.location.pathname);
+  loadAnalysis();
+});
+
+analysisForm.elements.namedItem("chart_type").addEventListener("change", () => {
+  if (currentAnalysisSummary && currentAnalysisDataset) {
+    renderSummary(currentAnalysisSummary, analysisForm.elements.namedItem("metric").value, analysisForm.elements.namedItem("group_by").value, analysisForm.elements.namedItem("chart_type").value, currentAnalysisDataset.records);
+  }
+});
+
+function analysisDownload(endpoint) {
+  const params = new URLSearchParams(currentAnalysisParams);
+  params.set("metric", analysisForm.elements.namedItem("metric").value);
+  params.set("group_by", analysisForm.elements.namedItem("group_by").value);
+  window.location.href = `${endpoint}?${params}`;
+}
+
+document.getElementById("download-analysis-data").addEventListener("click", () => analysisDownload("/api/analysis/dataset.csv"));
+document.getElementById("download-analysis-summary").addEventListener("click", () => analysisDownload("/api/analysis/summary.csv"));
+
+comparisonForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const params = new URLSearchParams(currentAnalysisParams);
+  params.set("metric", analysisForm.elements.namedItem("metric").value);
+  params.set("group_by", analysisForm.elements.namedItem("group_by").value);
+  new FormData(comparisonForm).forEach((value, key) => params.set(key, String(value).trim()));
+  comparisonResult.textContent = "Comparing…";
+  try {
+    const response = await fetch(`/api/analysis/compare?${params}`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Comparison failed.");
+    comparisonResult.textContent = `${result.group_a.group_name} vs ${result.group_b.group_name}: absolute difference ${formatNumber(result.absolute_difference)}; percentage difference ${result.percentage_difference === null ? "undefined" : formatNumber(result.percentage_difference) + "%"}.`;
+  } catch (error) {
+    comparisonResult.textContent = error.message;
+  }
+});
+
+document.querySelector('[data-view="analysis"]').addEventListener("click", () => {
+  if (!analysisCards.children.length) loadAnalysis();
+});
+
+function restoreAnalysisFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("analysis") !== "1") return;
+  params.delete("analysis");
+  params.forEach((value, key) => {
+    const field = analysisForm.elements.namedItem(key);
+    if (field) field.value = value;
+  });
+  showView("analysis");
+  loadAnalysis();
+}
+
+restoreAnalysisFromUrl();

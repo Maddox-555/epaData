@@ -15,8 +15,26 @@ from flask import Flask, jsonify, render_template, request, send_file
 from sqlalchemy import create_engine, desc, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from data_service import EPA_CAMPD_ANNUAL_URL, SOURCE_DEFINITIONS, RANGE_FILTERS, annual_filters, approve_uploaded_dataset, build_annual_query, cancel_uploaded_dataset, count_annual_records, ingest_dataframe, normalized_search_args, read_dataframe, retrieve_campd_dataframe, retrieve_dataframe
-from models import AnnualRecord, Base, DataProvenance, Dataset, Facility, Unit, UploadValidationError
+from data_service import (
+    EPA_CAMPD_ANNUAL_URL,
+    SOURCE_DEFINITIONS,
+    RANGE_FILTERS,
+    annual_filters,
+    approve_uploaded_dataset,
+    build_annual_query,
+    build_analysis_dataset,
+    calculate_traci_impact,
+    cancel_uploaded_dataset,
+    compare_analysis_groups,
+    count_annual_records,
+    ingest_dataframe,
+    normalized_search_args,
+    read_dataframe,
+    retrieve_campd_dataframe,
+    retrieve_dataframe,
+    summarize_analysis_metric,
+)
+from models import AnnualRecord, Base, DataProvenance, Dataset, Facility, TraciFactor, Unit, UploadValidationError
 
 
 def _json_value(value: Any) -> Any:
@@ -101,6 +119,7 @@ def create_app(database_url: str | None = None) -> Flask:
                 "facilities": "/api/facilities",
                 "annual_records": "/api/annual-records",
                 "annual_records_csv": "/api/annual-records.csv",
+                "analysis": "/api/analysis",
                 "upload": "POST /api/data/upload",
                 "retrieve": "POST /api/data/retrieve",
             },
@@ -332,6 +351,114 @@ def create_app(database_url: str | None = None) -> Flask:
             return jsonify({"count": len(rows), "records": [_record_dict(record, unit, facility) for record, unit, facility in rows]})
         except (ValueError, TypeError) as exc:
             return jsonify({"error": f"Invalid comparison parameter: {exc}"}), 400
+
+    @app.get("/api/analysis")
+    def analysis_index() -> Any:
+        return jsonify({
+            "dataset": "/api/analysis/dataset",
+            "summary": "/api/analysis/summary",
+            "impact": "/api/analysis/impact",
+            "traci_factors": "/api/analysis/traci-factors",
+        })
+
+    @app.get("/api/analysis/dataset")
+    def analysis_dataset() -> Any:
+        args = request.args.to_dict()
+        try:
+            limit = min(max(int(args.pop("limit", 250)), 1), 1000)
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+        try:
+            with SessionLocal() as session:
+                return jsonify(build_analysis_dataset(session, args, limit=limit))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid analysis dataset request: {exc}"}), 400
+
+    @app.get("/api/analysis/summary")
+    def analysis_summary() -> Any:
+        metric = request.args.get("metric", "co2_mass")
+        group_by = request.args.get("group_by", "state")
+        filters = {k: v for k, v in request.args.to_dict().items() if k not in {"metric", "group_by", "limit", "offset"}}
+        try:
+            with SessionLocal() as session:
+                return jsonify(summarize_analysis_metric(session, metric, filters, group_by=group_by))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid summary request: {exc}"}), 400
+
+    @app.get("/api/analysis/dataset.csv")
+    def analysis_dataset_csv() -> Any:
+        args = request.args.to_dict()
+        try:
+            with SessionLocal() as session:
+                data = build_analysis_dataset(session, args, limit=100000)["records"]
+            return _csv_file(data, "analysis-dataset.csv")
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid analysis dataset request: {exc}"}), 400
+
+    @app.get("/api/analysis/summary.csv")
+    def analysis_summary_csv() -> Any:
+        metric = request.args.get("metric", "co2_mass")
+        group_by = request.args.get("group_by", "state")
+        filters = {k: v for k, v in request.args.to_dict().items() if k not in {"metric", "group_by"}}
+        try:
+            with SessionLocal() as session:
+                result = summarize_analysis_metric(session, metric, filters, group_by=group_by)
+            rows = result["results"] or [{"group_key": "overall", **result["summary"]}]
+            return _csv_file(rows, "analysis-summary.csv")
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid summary request: {exc}"}), 400
+
+    @app.get("/api/analysis/compare")
+    def analysis_compare() -> Any:
+        metric = request.args.get("metric", "co2_mass")
+        group_by = request.args.get("group_by", "state")
+        group_a = request.args.get("group_a", "")
+        group_b = request.args.get("group_b", "")
+        filters = {k: v for k, v in request.args.to_dict().items() if k not in {"metric", "group_by", "group_a", "group_b"}}
+        try:
+            with SessionLocal() as session:
+                return jsonify(compare_analysis_groups(session, metric, filters, group_a, group_b, group_by))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid comparison request: {exc}"}), 400
+
+    @app.get("/api/analysis/impact")
+    def analysis_impact() -> Any:
+        filters = {k: v for k, v in request.args.to_dict().items() if k not in {"impact_category", "category", "pollutant", "group_by", "normalize_by", "limit", "offset"}}
+        impact_category = request.args.get("impact_category") or request.args.get("category", "global warming")
+        pollutant = request.args.get("pollutant")
+        group_by = request.args.get("group_by", "facility")
+        normalize_by = request.args.get("normalize_by")
+        try:
+            with SessionLocal() as session:
+                return jsonify(calculate_traci_impact(session, filters, impact_category=impact_category, pollutant=pollutant, group_by=group_by, normalize_by=normalize_by))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid impact request: {exc}"}), 400
+
+    @app.get("/api/analysis/traci-factors")
+    def analysis_traci_factors() -> Any:
+        pollutant = request.args.get("pollutant")
+        impact_category = request.args.get("impact_category") or request.args.get("category")
+        version = request.args.get("version", "2.2")
+        query = select(TraciFactor).where(TraciFactor.traci_version == version)
+        if pollutant:
+            query = query.where(func.lower(TraciFactor.pollutant).like(f"%{pollutant.lower()}%"))
+        if impact_category:
+            query = query.where(func.lower(TraciFactor.impact_category).like(f"%{impact_category.lower()}%"))
+        with SessionLocal() as session:
+            rows = session.execute(query.order_by(TraciFactor.impact_category, TraciFactor.pollutant)).scalars().all()
+        return jsonify([
+            {
+                "traci_factor_id": row.traci_factor_id,
+                "pollutant": row.pollutant,
+                "impact_category": row.impact_category,
+                "characterization_factor": float(row.characterization_factor),
+                "factor_unit": row.factor_unit,
+                "reference_flow_unit": row.reference_flow_unit,
+                "traci_version": row.traci_version,
+                "geography": row.geography,
+            }
+            for row in rows
+        ])
 
     @app.get("/api/facilities")
     def facilities() -> Any:

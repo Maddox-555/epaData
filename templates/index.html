@@ -5,6 +5,7 @@
   <title>epaData – Environmental Data Platform</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
@@ -16,6 +17,7 @@
       <button data-view="retrieval">EPA Retrieval</button>
       <button data-view="upload">Upload</button>
       <button data-view="explorer">Explorer</button>
+      <button data-view="analysis">Analysis</button>
       <button data-view="datasets">Datasets</button>
       <button data-view="downloads">Downloads</button>
     </nav>
@@ -218,11 +220,6 @@
           <div id="results-count" class="results-count">Run a search to see results.</div>
         </div>
 
-        <!-- Interactive Chart Container -->
-        <div class="chart-container" id="chart-wrapper" style="position: relative; height: 350px; width: 100%; margin-bottom: 2rem; display: none;">
-          <canvas id="emissionsChart"></canvas>
-        </div>
-
         <div class="table-responsive">
           <table class="table" id="results-table">
             <thead>
@@ -250,6 +247,115 @@
           <span id="page-info"></span>
           <button class="secondary" type="button" id="next-page">Next</button>
         </div>
+      </div>
+    </section>
+
+    <!-- ANALYSIS -->
+    <section id="view-analysis" class="view">
+      <div class="panel">
+        <h1>Analysis Dashboard</h1>
+        <p class="panel-desc">Explore filtered CAMPD emissions and operating data with interactive charts. Results are descriptive and do not imply causation.</p>
+        <form id="analysis-form" class="form-grid">
+          <div class="form-field">
+            <label for="analysis-metric">Metric</label>
+            <select id="analysis-metric" name="metric">
+              <option value="co2_mass">CO₂ emissions (short tons)</option>
+              <option value="so2_mass">SO₂ emissions (short tons)</option>
+              <option value="nox_mass">NOx emissions (short tons)</option>
+              <option value="gross_load">Gross load (MWh)</option>
+              <option value="heat_input">Heat input (mmBtu)</option>
+              <option value="co2_intensity">CO₂ intensity (tons/MWh)</option>
+              <option value="so2_intensity">SO₂ intensity (tons/MWh)</option>
+              <option value="nox_intensity">NOx intensity (tons/MWh)</option>
+              <option value="heat_rate">Heat rate (mmBtu/MWh)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="analysis-group">Group by</label>
+            <select id="analysis-group" name="group_by">
+              <option value="state">State</option>
+              <option value="facility">Facility</option>
+              <option value="unit">Unit</option>
+              <option value="year">Reporting year</option>
+              <option value="fuel">Primary fuel</option>
+              <option value="unit_type">Unit type</option>
+              <option value="so2_control">SO₂ control</option>
+              <option value="nox_control">NOx control</option>
+              <option value="pm_control">PM control</option>
+              <option value="program">Emissions program</option>
+            </select>
+          </div>
+          <div class="form-field"><label>State</label><input name="state" maxlength="2" placeholder="e.g. KY"></div>
+          <div class="form-field"><label>Year from</label><input name="reporting_year_min" type="number"></div>
+          <div class="form-field"><label>Year to</label><input name="reporting_year_max" type="number"></div>
+          <div class="form-field"><label>Primary fuel</label><input name="primary_fuel" placeholder="e.g. coal"></div>
+          <div class="form-field"><label>Facility</label><input name="facility_id" placeholder="EPA facility ID"></div>
+          <div class="form-field"><label>Unit</label><input name="unit_id" placeholder="EPA unit ID"></div>
+          <div class="form-field"><label>Unit type</label><input name="unit_type"></div>
+          <div class="form-field"><label>Minimum operating time</label><input name="operating_time_min" type="number" step="any"></div>
+          <div class="form-field"><label>Minimum gross load</label><input name="gross_load_min" type="number" step="any"></div>
+          <div class="form-field"><label>SO₂ control</label><input name="so2_control_information"></div>
+          <div class="form-field"><label>NOx control</label><input name="nox_control_information"></div>
+          <div class="form-field"><label>PM control</label><input name="pm_control_information"></div>
+          <div class="form-field"><label>Emissions program</label><input name="program_code"></div>
+          <div class="form-field">
+            <label>Chart type</label>
+            <select name="chart_type">
+              <option value="bar">Bar comparison</option>
+              <option value="line">Line trend</option>
+              <option value="histogram">Histogram</option>
+              <option value="box">Box plot</option>
+              <option value="scatter">Scatter plot</option>
+              <option value="correlation">Correlation heat map</option>
+              <option value="map">Facility map</option>
+            </select>
+          </div>
+          <div class="form-actions full">
+            <button class="primary" type="submit">Update analysis</button>
+            <button class="secondary" type="button" id="clear-analysis">Clear</button>
+            <button class="secondary" type="button" id="download-analysis-data">Download data</button>
+            <button class="secondary" type="button" id="download-analysis-summary">Download summary</button>
+          </div>
+        </form>
+        <div id="analysis-status" class="status"></div>
+      </div>
+
+      <div id="analysis-cards" class="analysis-cards"></div>
+      <div class="panel analysis-meta">
+        <div><strong>Selected records:</strong> <span id="analysis-record-count">—</span></div>
+        <div><strong>Facilities:</strong> <span id="analysis-facility-count">—</span></div>
+        <div><strong>Units:</strong> <span id="analysis-unit-count">—</span></div>
+        <div><strong>Years:</strong> <span id="analysis-year-count">—</span></div>
+        <div><strong>Available variables:</strong> <span id="analysis-variables">—</span></div>
+      </div>
+      <div class="panel">
+        <h2>Missing-value summary</h2>
+        <div id="analysis-missing" class="missing-summary"></div>
+      </div>
+      <div class="analysis-grid">
+        <div class="panel"><div id="summary-chart" class="plot"></div></div>
+        <div class="panel"><div id="trend-chart" class="plot"></div></div>
+      </div>
+      <div class="panel">
+        <div class="results-header"><h2>Comparison</h2><span class="panel-note">Select two groups from the current grouped results.</span></div>
+        <form id="comparison-form" class="form-grid compact-form">
+          <div class="form-field"><label>Group A</label><input name="group_a" placeholder="e.g. KY"></div>
+          <div class="form-field"><label>Group B</label><input name="group_b" placeholder="e.g. OH"></div>
+          <div class="form-actions full"><button class="secondary" type="submit">Compare groups</button></div>
+        </form>
+        <div id="comparison-result" class="status"></div>
+      </div>
+      <div class="panel">
+        <div class="results-header"><h2>TRACI impact assessment</h2><span class="panel-note">Masses are converted from short tons to kilograms before applying TRACI 2.2 factors.</span></div>
+        <form id="impact-form" class="form-grid compact-form">
+          <div class="form-field"><label>Impact category</label><select name="impact_category"><option value="global warming">Global warming</option><option value="acidification">Acidification</option><option value="smog formation">Smog formation</option><option value="particulate matter">Particulate matter</option><option value="human health">Human health</option></select></div>
+          <div class="form-field"><label>Pollutant</label><select name="pollutant"><option value="">CO₂ + SO₂ + NOx</option><option value="co2">CO₂</option><option value="so2">SO₂</option><option value="nox">NOx</option></select></div>
+          <div class="form-field"><label>Group by</label><select name="group_by"><option value="facility">Facility</option><option value="state">State</option><option value="unit">Unit</option><option value="year">Year</option><option value="fuel">Fuel</option><option value="unit_type">Unit type</option></select></div>
+          <div class="form-field"><label>Normalize by</label><select name="normalize_by"><option value="">No normalization</option><option value="gross_load">Gross load (per MWh)</option></select></div>
+          <div class="form-actions full"><button class="primary" type="submit">Calculate impact</button></div>
+        </form>
+        <div id="impact-total" class="impact-total"></div>
+        <div id="impact-chart" class="plot"></div>
       </div>
     </section>
 
@@ -289,7 +395,7 @@
   </main>
 
   <footer class="footer">
-    epaData • Phase 1
+    epaData • CAMPD + TRACI analytics
   </footer>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
