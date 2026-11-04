@@ -196,12 +196,27 @@ def test_health_endpoint(client):
     assert response.json["status"] == "ok"
 
 
+def test_analysis_json_uses_null_for_undefined_derived_indicators(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Gross Load,CO2 Mass\n"
+        b"100,Zero Load,OH,U1,2022,0,20\n"
+        b"200,Missing Load,OH,U2,2022,,30\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+
+    response = client.get("/api/analysis/dataset?metric=co2_intensity")
+
+    assert response.status_code == 200
+    assert b"NaN" not in response.data
+    assert [row["co2_intensity"] for row in response.json["records"]] == [None, None]
+
+
 def test_sources_endpoint_describes_supported_original_sources(client):
     response = client.get("/api/sources")
 
     assert response.status_code == 200
     assert response.json["epa-campd"]["supported_import"] is True
-    assert response.json["nasa-power"]["default_endpoint"].startswith("https://")
+    assert "nasa-power" not in response.json
 
 
 def test_epa_campd_retrieval_records_source_url(client, monkeypatch):
