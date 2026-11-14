@@ -7,6 +7,7 @@ from sqlalchemy import text
 import app as app_module
 from app import create_app
 from data_service import parse_search_description
+from models import TraciFactor
 
 
 @pytest.fixture
@@ -209,6 +210,85 @@ def test_analysis_json_uses_null_for_undefined_derived_indicators(client):
     assert response.status_code == 200
     assert b"NaN" not in response.data
     assert [row["co2_intensity"] for row in response.json["records"]] == [None, None]
+
+
+def test_traci_impact_returns_only_matching_groups(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
+        b"CO2 Mass,SO2 Mass,NOx Mass\n"
+        b"100,Test Plant,KY,U1,2022,20,10,5\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+    with client.application.extensions["epa_sessionmaker"]() as session:
+        session.add_all([
+            TraciFactor(
+                pollutant="SULFUR DIOXIDE", impact_category="acidification",
+                characterization_factor=1, factor_unit="kg SO2 eq / kg substance",
+                reference_flow_unit="kg substance", traci_version="2.2",
+                source_name="test", geography="US site-generic:Acidification Air",
+            ),
+            TraciFactor(
+                pollutant="NITROGEN OXIDES", impact_category="acidification",
+                characterization_factor=0.7, factor_unit="kg SO2 eq / kg substance",
+                reference_flow_unit="kg substance", traci_version="2.2",
+                source_name="test", geography="US site-generic:Acidification Air",
+            ),
+        ])
+        session.commit()
+
+    acidification = client.get("/api/analysis/impact", query_string={
+        "impact_category": "acidification", "group_by": "state",
+    })
+    assert acidification.status_code == 200
+    assert acidification.json["traci_version"] == "2.2"
+    assert acidification.json["matched_factor_count"] == 2
+    assert [row["group_key"] for row in acidification.json["results"]] == ["KY"]
+
+    human_health = client.get("/api/analysis/impact", query_string={
+        "impact_category": "human health", "group_by": "state",
+    })
+    assert human_health.status_code == 200
+    assert human_health.json["matched_factor_count"] == 0
+    assert human_health.json["results"] == []
+
+
+def test_comparison_supports_normalized_group_statistics(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
+        b"Gross Load,CO2 Mass\n"
+        b"100,Kentucky Plant,KY,U1,2022,10,100\n"
+        b"200,Ohio Plant,OH,U1,2022,20,100\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+    response = client.get("/api/analysis/compare", query_string={
+        "metric": "co2_mass", "group_by": "state", "group_a": "KY",
+        "group_b": "OH", "normalize_by": "gross_load",
+    })
+    assert response.status_code == 200
+    assert response.json["group_a"]["mean"] == 10
+    assert response.json["group_b"]["mean"] == 5
+    assert response.json["absolute_difference"] == -5
+
+
+def test_prediction_uses_chronological_splits_and_excludes_target_leakage(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
+        b"Gross Load,CO2 Mass\n"
+        b"100,Test Plant,KY,U1,2020,10,100\n"
+        b"100,Test Plant,KY,U1,2021,11,110\n"
+        b"100,Test Plant,KY,U1,2022,12,120\n"
+        b"100,Test Plant,KY,U1,2023,13,130\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+    response = client.get("/api/prediction")
+    assert response.status_code == 200, response.json
+    result = response.json
+    assert result["target"] == "next_year_co2_mass"
+    assert result["splits"]["train"]["target_years"] == [2021, 2021]
+    assert result["splits"]["validation"]["target_year"] == 2022
+    assert result["splits"]["test"]["target_year"] == 2023
+    assert "next_year_co2_mass" not in result["features"]
+    assert set(result["models"]) == {"mean_baseline", "ridge", "random_forest"}
 
 
 def test_sources_endpoint_describes_supported_original_sources(client):

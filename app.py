@@ -34,6 +34,7 @@ from data_service import (
     retrieve_dataframe,
     summarize_analysis_metric,
 )
+from prediction_service import run_prediction
 from models import AnnualRecord, Base, DataProvenance, Dataset, Facility, TraciFactor, Unit, UploadValidationError
 
 
@@ -120,6 +121,7 @@ def create_app(database_url: str | None = None) -> Flask:
                 "annual_records": "/api/annual-records",
                 "annual_records_csv": "/api/annual-records.csv",
                 "analysis": "/api/analysis",
+                "prediction": "/api/prediction",
                 "upload": "POST /api/data/upload",
                 "retrieve": "POST /api/data/retrieve",
             },
@@ -361,6 +363,15 @@ def create_app(database_url: str | None = None) -> Flask:
             "traci_factors": "/api/analysis/traci-factors",
         })
 
+    @app.get("/api/prediction")
+    def prediction() -> Any:
+        state = request.args.get("state") or None
+        try:
+            with SessionLocal() as session:
+                return jsonify(run_prediction(session, state=state))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid prediction request: {exc}"}), 400
+
     @app.get("/api/analysis/dataset")
     def analysis_dataset() -> Any:
         args = request.args.to_dict()
@@ -414,10 +425,11 @@ def create_app(database_url: str | None = None) -> Flask:
         group_by = request.args.get("group_by", "state")
         group_a = request.args.get("group_a", "")
         group_b = request.args.get("group_b", "")
-        filters = {k: v for k, v in request.args.to_dict().items() if k not in {"metric", "group_by", "group_a", "group_b"}}
+        normalize_by = request.args.get("normalize_by") or None
+        filters = {k: v for k, v in request.args.to_dict().items() if k not in {"metric", "group_by", "group_a", "group_b", "normalize_by"}}
         try:
             with SessionLocal() as session:
-                return jsonify(compare_analysis_groups(session, metric, filters, group_a, group_b, group_by))
+                return jsonify(compare_analysis_groups(session, metric, filters, group_a, group_b, group_by, normalize_by))
         except (ValueError, TypeError) as exc:
             return jsonify({"error": f"Invalid comparison request: {exc}"}), 400
 

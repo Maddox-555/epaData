@@ -484,6 +484,60 @@ button { font-family: inherit; }
 .analysis-meta strong { color: var(--text-main); }
 .missing-summary { color: var(--text-muted); padding-top: 0.75rem; }
 
+.prediction-methodology {
+  background: #f8fafc;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  margin: 1.25rem 0;
+  padding: 1.25rem 1.5rem;
+}
+
+.prediction-methodology h2 { color: var(--text-main); font-size: 1.1rem; margin-top: 0; }
+.prediction-methodology p { margin: 0.65rem 0; }
+.prediction-methodology strong { color: var(--text-main); }
+.prediction-splits {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+
+.prediction-split {
+  background: white;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-btn);
+  padding: 1rem;
+}
+
+.prediction-split span,
+.prediction-split small { color: var(--text-muted); display: block; }
+.prediction-split strong { color: var(--primary-hover); display: block; font-size: 1.25rem; margin: 0.25rem 0; }
+.prediction-table {
+  min-width: 760px;
+  table-layout: fixed;
+}
+
+.prediction-table th,
+.prediction-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.prediction-table th:first-child,
+.prediction-table td:first-child { width: 24%; }
+.prediction-table th:not(:first-child),
+.prediction-table td:not(:first-child) { width: 15.2%; text-align: right; }
+.prediction-table th:not(:first-child) { letter-spacing: 0.02em; }
+.prediction-table .selected-model { background: #ecfdf5; font-weight: 700; }
+.prediction-note { color: var(--text-muted); line-height: 1.5; padding: 1rem 0; }
+
+@media (max-width: 700px) {
+  .prediction-splits { grid-template-columns: 1fr; }
+}
+
 .footer {
   text-align: center;
   padding: 2.5rem;
