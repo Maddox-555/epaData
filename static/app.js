@@ -4,6 +4,7 @@ const views = {
   upload: document.getElementById("view-upload"),
   explorer: document.getElementById("view-explorer"),
   analysis: document.getElementById("view-analysis"),
+  prediction: document.getElementById("view-prediction"),
   datasets: document.getElementById("view-datasets"),
   downloads: document.getElementById("view-downloads")
 };
@@ -330,6 +331,11 @@ const analysisStatus = document.getElementById("analysis-status");
 const analysisCards = document.getElementById("analysis-cards");
 const comparisonForm = document.getElementById("comparison-form");
 const comparisonResult = document.getElementById("comparison-result");
+const predictionForm = document.getElementById("prediction-form");
+const predictionStatus = document.getElementById("prediction-status");
+const predictionSplits = document.getElementById("prediction-splits");
+const predictionResults = document.getElementById("prediction-results");
+const predictionSummary = document.getElementById("prediction-summary");
 let currentAnalysisParams = new URLSearchParams();
 let currentAnalysisDataset = null;
 let currentAnalysisSummary = null;
@@ -486,7 +492,14 @@ async function loadAnalysis() {
 async function loadImpact() {
   const analysisFilters = analysisParams(analysisForm, false);
   const impactParams = analysisParams(impactForm);
-  ["state", "reporting_year_min", "reporting_year_max", "primary_fuel"].forEach(key => {
+  [
+    "facility_id", "unit_id", "state", "reporting_year", "reporting_year_min",
+    "reporting_year_max", "primary_fuel", "unit_type", "operating_time_min",
+    "operating_time_max", "gross_load_min", "gross_load_max", "heat_input_min",
+    "heat_input_max", "co2_mass_min", "co2_mass_max", "so2_mass_min",
+    "so2_mass_max", "nox_mass_min", "nox_mass_max", "so2_control_information",
+    "nox_control_information", "pm_control_information", "program_code"
+  ].forEach(key => {
     if (analysisFilters.has(key)) impactParams.set(key, analysisFilters.get(key));
   });
   const response = await fetch(`/api/analysis/impact?${impactParams}`);
@@ -494,7 +507,16 @@ async function loadImpact() {
   if (!response.ok) throw new Error(data.error || "Impact request failed.");
   const units = data.factor_units && data.factor_units.length ? data.factor_units.join("; ") : "No verified matching factor";
   const normalization = data.normalize_by ? `; normalized by ${data.normalize_by}` : "";
-  document.getElementById("impact-total").textContent = `Total potential impact: ${formatNumber(data.total_impact)} ${units}${normalization} (TRACI ${data.traci_version})`;
+  const impactTotal = document.getElementById("impact-total");
+  if (!data.matched_factor_count || !data.results.length) {
+    impactTotal.textContent = `No matching TRACI 2.2 air-emission factor was found for ${data.impact_category} and the selected pollutant(s).`;
+    Plotly.purge("impact-chart");
+    document.getElementById("impact-chart").textContent = "No impact data is available for this selection.";
+    return;
+  }
+
+  const traciVersion = data.traci_version || "2.2";
+  impactTotal.textContent = `Total potential impact: ${formatNumber(data.total_impact)} ${units}${normalization} (TRACI ${traciVersion})`;
   const rows = data.results.slice().sort((a, b) => b.impact - a.impact).slice(0, 25);
   Plotly.newPlot("impact-chart", [{
     x: rows.map(row => row.group_key), y: rows.map(row => row.impact), type: "bar",
@@ -510,6 +532,65 @@ analysisForm.addEventListener("submit", event => {
 impactForm.addEventListener("submit", event => {
   event.preventDefault();
   loadImpact().catch(error => { document.getElementById("impact-total").textContent = error.message; });
+});
+
+predictionForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const params = new URLSearchParams(new FormData(predictionForm));
+  predictionStatus.textContent = "Training chronological prediction models…";
+  predictionSplits.replaceChildren();
+  predictionResults.replaceChildren();
+  predictionSummary.textContent = "";
+  try {
+    const response = await fetch(`/api/prediction?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Prediction request failed.");
+    const test = data.splits.test;
+    predictionStatus.textContent = `${data.objective} Selected model: ${data.selected_model.replace("_", " ")}.`;
+    [
+      ["Training", `${data.splits.train.target_years[0]}–${data.splits.train.target_years[1]}`, data.splits.train.records],
+      ["Validation", data.splits.validation.target_year, data.splits.validation.records],
+      ["Final test", test.target_year, test.records]
+    ].forEach(([label, years, records]) => {
+      const card = document.createElement("div");
+      card.className = "prediction-split";
+      card.innerHTML = `<span>${label}</span><strong>${years}</strong><small>${Number(records).toLocaleString()} records</small>`;
+      predictionSplits.appendChild(card);
+    });
+    const labels = {
+      mean_baseline: "Mean baseline",
+      ridge: "Ridge regression",
+      random_forest: "Random forest"
+    };
+    Object.entries(data.models).forEach(([name, scores]) => {
+      const row = document.createElement("tr");
+      const values = [
+        labels[name] || name,
+        formatNumber(scores.validation.mae),
+        formatNumber(scores.test.mae),
+        formatNumber(scores.test.rmse),
+        formatNumber(scores.test.r2),
+        scores.test.mape === null ? "—" : `${formatNumber(scores.test.mape)}%`
+      ];
+      values.forEach(value => {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.appendChild(cell);
+      });
+      if (name === data.selected_model) row.className = "selected-model";
+      predictionResults.appendChild(row);
+    });
+    predictionSummary.textContent = `Features: ${data.features.join(", ")}. ${data.feature_policy}`;
+    const names = Object.keys(data.models);
+    Plotly.newPlot("prediction-chart", [
+      {x: names, y: names.map(name => data.models[name].test.mae), type: "bar", name: "MAE", marker: {color: "#2563eb"}},
+      {x: names, y: names.map(name => data.models[name].test.rmse), type: "bar", name: "RMSE", marker: {color: "#f59e0b"}}
+    ], plotLayout("Test-set prediction error", "Model", "Error (short tons)"), {responsive: true, displaylogo: false, barmode: "group"});
+  } catch (error) {
+    predictionStatus.textContent = error.message;
+    predictionSummary.textContent = "";
+    Plotly.purge("prediction-chart");
+  }
 });
 
 document.getElementById("clear-analysis").addEventListener("click", () => {
@@ -539,15 +620,25 @@ comparisonForm.addEventListener("submit", async event => {
   const params = new URLSearchParams(currentAnalysisParams);
   params.set("metric", analysisForm.elements.namedItem("metric").value);
   params.set("group_by", analysisForm.elements.namedItem("group_by").value);
+  params.set("normalize_by", comparisonForm.elements.namedItem("normalize_by").value);
   new FormData(comparisonForm).forEach((value, key) => params.set(key, String(value).trim()));
   comparisonResult.textContent = "Comparing…";
   try {
     const response = await fetch(`/api/analysis/compare?${params}`);
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Comparison failed.");
-    comparisonResult.textContent = `${result.group_a.group_name} vs ${result.group_b.group_name}: absolute difference ${formatNumber(result.absolute_difference)}; percentage difference ${result.percentage_difference === null ? "undefined" : formatNumber(result.percentage_difference) + "%"}.`;
+    const normalization = result.normalize_by ? ` normalized by ${result.normalize_by}` : "";
+    comparisonResult.textContent = `${result.group_a.group_name} vs ${result.group_b.group_name}${normalization}: ${result.metric} means ${formatNumber(result.group_a.mean)} vs ${formatNumber(result.group_b.mean)}; absolute difference ${formatNumber(result.absolute_difference)}; percentage difference ${result.percentage_difference === null ? "undefined" : formatNumber(result.percentage_difference) + "%"}.`;
+    Plotly.newPlot("comparison-chart", [{
+      x: [result.group_a.group_name, result.group_b.group_name],
+      y: [result.group_a.mean, result.group_b.mean],
+      type: "bar",
+      marker: {color: ["#2563eb", "#f59e0b"]},
+      hovertemplate: "%{x}<br>Mean: %{y:,.3f}<extra></extra>"
+    }], plotLayout(`${result.metric} comparison${normalization}`, result.group_by, "Mean value"), {responsive: true, displaylogo: false});
   } catch (error) {
     comparisonResult.textContent = error.message;
+    Plotly.purge("comparison-chart");
   }
 });
 

@@ -808,22 +808,31 @@ def build_analysis_dataset(session: Session, filters: dict[str, Any], *, limit: 
     }
 
 
-def summarize_analysis_metric(session: Session, metric: str, filters: dict[str, Any] | None = None, *, group_by: str = "state") -> dict[str, Any]:
+def summarize_analysis_metric(session: Session, metric: str, filters: dict[str, Any] | None = None, *, group_by: str = "state", normalize_by: str | None = None) -> dict[str, Any]:
     filters = filters or {}
     if metric not in ANALYSIS_METRICS and metric not in {"value"}:
         raise ValueError(f"unsupported metric '{metric}'")
     query = build_annual_query(filters)
     rows = session.execute(query).all()
     dataframe = _records_to_dataframe(rows)
+    if normalize_by and normalize_by not in {"gross_load", "heat_input", "operating_time"}:
+        raise ValueError(f"unsupported normalization field '{normalize_by}'")
+    if normalize_by:
+        if metric == "value":
+            raise ValueError("normalization is not supported for the combined value metric")
+        dataframe["_analysis_value"] = dataframe[metric] / dataframe[normalize_by].where(dataframe[normalize_by] != 0)
+        value_column = "_analysis_value"
+    else:
+        value_column = metric
     if metric == "value":
         metrics = ["co2_mass", "so2_mass", "nox_mass"]
         data = [float(value) for values in [dataframe[m].tolist() for m in metrics] for value in values if pd.notna(value)]
         missing = sum(int(dataframe[m].isna().sum()) for m in metrics)
     else:
-        if metric in dataframe.columns:
-            raw_values = dataframe[metric].tolist()
+        if value_column in dataframe.columns:
+            raw_values = dataframe[value_column].tolist()
             data = [float(value) for value in raw_values if pd.notna(value)]
-            missing = int(dataframe[metric].isna().sum())
+            missing = int(dataframe[value_column].isna().sum())
         else:
             data = [float(_metric_value(record, metric)) for record, _, _ in rows if _metric_value(record, metric) is not None]
             missing = len(rows) - len(data)
@@ -840,21 +849,22 @@ def summarize_analysis_metric(session: Session, metric: str, filters: dict[str, 
     grouped_rows: list[dict[str, Any]] = []
     if not dataframe.empty:
         for label, group in dataframe.groupby(group_column, dropna=False):
-            if metric not in group.columns:
+            if value_column not in group.columns:
                 continue
-            raw_values = group[metric].tolist()
+            raw_values = group[value_column].tolist()
             numeric = [float(value) for value in raw_values if pd.notna(value)]
             grouped_rows.append({
                 "group_key": str(label),
                 "group_name": str(label) if pd.notna(label) else "Unknown / missing",
                 "count": len(numeric),
-                "missing": int(group[metric].isna().sum()),
+                "missing": int(group[value_column].isna().sum()),
                 "total": len(group),
-                **_summarize_numeric_series(numeric, missing=int(group[metric].isna().sum()), total=len(group)),
+                **_summarize_numeric_series(numeric, missing=int(group[value_column].isna().sum()), total=len(group)),
             })
     return {
         "metric": metric,
         "group_by": group_by,
+        "normalize_by": normalize_by,
         "summary": summary,
         "results": grouped_rows,
     }
@@ -891,7 +901,11 @@ def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_
     category = _normalize_impact_category(impact_category)
     rows = session.execute(build_annual_query(filters)).all()
     if not rows:
-        return {"impact_category": category, "pollutant": pollutant, "group_by": group_by, "normalize_by": normalize_by, "factor_units": [], "traci_version": "2.2", "results": [], "total_impact": 0.0}
+        return {
+            "impact_category": category, "pollutant": pollutant, "group_by": group_by,
+            "normalize_by": normalize_by, "factor_units": [], "traci_version": "2.2",
+            "matched_factor_count": 0, "results": [], "total_impact": 0.0,
+        }
     data = _records_to_dataframe(rows)
     chosen_pollutants = [pollutant] if pollutant else ["co2", "so2", "nox"]
     factor_lookup: dict[str, list[TraciFactor]] = {}
@@ -942,11 +956,18 @@ def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_
         if normalize_by and f"impact_per_{normalize_by}" in entry:
             result[f"impact_per_{normalize_by}"] = round(float(entry[f"impact_per_{normalize_by}"]), 6)
         results.append(result)
-    return {"impact_category": category, "pollutant": pollutant, "group_by": group_by, "normalize_by": normalize_by, "factor_units": sorted(factor_units), "traci_version": "2.2", "results": results, "total_impact": round(sum(item["impact"] for item in results), 6)}
+    results = [result for result in results if result["impact"] != 0]
+    return {
+        "impact_category": category, "pollutant": pollutant, "group_by": group_by,
+        "normalize_by": normalize_by, "factor_units": sorted(factor_units),
+        "traci_version": "2.2",
+        "matched_factor_count": sum(len(factors) for factors in factor_lookup.values()),
+        "results": results, "total_impact": round(sum(item["impact"] for item in results), 6),
+    }
 
 
-def compare_analysis_groups(session: Session, metric: str, filters: dict[str, Any], group_a: str, group_b: str, group_by: str = "state") -> dict[str, Any]:
-    summary = summarize_analysis_metric(session, metric, filters, group_by=group_by)
+def compare_analysis_groups(session: Session, metric: str, filters: dict[str, Any], group_a: str, group_b: str, group_by: str = "state", normalize_by: str | None = None) -> dict[str, Any]:
+    summary = summarize_analysis_metric(session, metric, filters, group_by=group_by, normalize_by=normalize_by)
     lookup = {row["group_key"]: row for row in summary["results"]}
     if group_a not in lookup or group_b not in lookup:
         raise ValueError("Both comparison groups must exist in the selected data.")
@@ -956,6 +977,7 @@ def compare_analysis_groups(session: Session, metric: str, filters: dict[str, An
     return {
         "metric": metric,
         "group_by": group_by,
+        "normalize_by": normalize_by,
         "group_a": first,
         "group_b": second,
         "absolute_difference": absolute_difference,

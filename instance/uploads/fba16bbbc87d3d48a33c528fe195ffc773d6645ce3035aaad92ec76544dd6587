@@ -1,0 +1,3 @@
+EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,Gross Load,CO2 Mass
+100,Zero Load,OH,U1,2022,0,20
+200,Missing Load,OH,U2,2022,,30

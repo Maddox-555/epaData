@@ -18,6 +18,7 @@
       <button data-view="upload">Upload</button>
       <button data-view="explorer">Explorer</button>
       <button data-view="analysis">Analysis</button>
+      <button data-view="prediction">Prediction</button>
       <button data-view="datasets">Datasets</button>
       <button data-view="downloads">Downloads</button>
     </nav>
@@ -341,9 +342,11 @@
         <form id="comparison-form" class="form-grid compact-form">
           <div class="form-field"><label>Group A</label><input name="group_a" placeholder="e.g. KY"></div>
           <div class="form-field"><label>Group B</label><input name="group_b" placeholder="e.g. OH"></div>
+          <div class="form-field"><label>Normalize by</label><select name="normalize_by"><option value="">Raw values</option><option value="gross_load">Gross load (per MWh)</option><option value="heat_input">Heat input</option><option value="operating_time">Operating time</option></select></div>
           <div class="form-actions full"><button class="secondary" type="submit">Compare groups</button></div>
         </form>
         <div id="comparison-result" class="status"></div>
+        <div id="comparison-chart" class="plot"></div>
       </div>
       <div class="panel">
         <div class="results-header"><h2>TRACI impact assessment</h2><span class="panel-note">Masses are converted from short tons to kilograms before applying TRACI 2.2 factors.</span></div>
@@ -356,6 +359,38 @@
         </form>
         <div id="impact-total" class="impact-total"></div>
         <div id="impact-chart" class="plot"></div>
+      </div>
+    </section>
+
+    <!-- PREDICTION -->
+    <section id="view-prediction" class="view">
+      <div class="panel">
+        <h1>Prediction Model</h1>
+        <p class="panel-desc">Predict next-year unit CO₂ emissions using chronological evaluation and leakage-aware prior-year features.</p>
+        <div class="prediction-methodology">
+          <h2>Methodology</h2>
+          <p><strong>Target:</strong> next-year unit CO₂ emissions, measured in short tons. Each row predicts year <em>t + 1</em> from information observed in year <em>t</em>.</p>
+          <p><strong>Features:</strong> prior-year CO₂, SO₂, and NOx; gross load; heat input; operating time; facility, state, fuel, and unit type; pollution-control technologies; emissions program; and reporting year.</p>
+          <p><strong>Leakage control:</strong> the next-year target is never included as a feature. Static characteristics and prior-year observations are retained, but future observations are not used to train a prediction for an earlier period.</p>
+          <p><strong>Models:</strong> a mean-emissions baseline, Ridge regression, and random-forest regression are compared. The model with the lowest validation MAE is selected.</p>
+          <p><strong>Chronological evaluation:</strong> earlier target years train the models, the penultimate target year is validation, and the most recent target year is the final test. This reflects the real-world task of forecasting a future reporting period and avoids random mixing of past and future records.</p>
+        </div>
+        <form id="prediction-form" class="form-grid compact-form">
+          <div class="form-field"><label>State filter (optional)</label><input name="state" maxlength="2" placeholder="e.g. KY"></div>
+          <div class="form-actions full"><button class="primary" type="submit">Run prediction</button></div>
+        </form>
+        <div id="prediction-status" class="status"></div>
+        <div id="prediction-splits" class="prediction-splits"></div>
+        <div class="table-responsive">
+          <table class="table prediction-table">
+            <thead>
+              <tr><th>Model</th><th>Validation MAE</th><th>Test MAE</th><th>Test RMSE</th><th>Test R²</th><th>Test MAPE</th></tr>
+            </thead>
+            <tbody id="prediction-results"></tbody>
+          </table>
+        </div>
+        <div id="prediction-summary" class="prediction-note"></div>
+        <div id="prediction-chart" class="plot"></div>
       </div>
     </section>
 
