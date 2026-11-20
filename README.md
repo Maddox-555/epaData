@@ -20,7 +20,7 @@ python app.py
 
 Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser. Stop the server with `Ctrl+C`.
 
-The app reads the SQLite database `epa_data.db` in the repository root, so run `python app.py` from that folder. The committed database already contains CAMPD 2020–2024, TRACI 2.2, and NASA POWER data; see [Populate source data](#populate-source-data) only if you need to rebuild or extend it.
+The app reads the SQLite database `epa_data.db` in the repository root, so run `python app.py` from that folder. The committed database already contains CAMPD 2020–2024 and TRACI 2.2 data; see [Populate source data](#populate-source-data) only if you need to rebuild or extend it.
 
 For a new database, copy `.env.example` to `.env` or set the variables in
 PowerShell, then initialize the schema with Alembic:
@@ -137,7 +137,7 @@ The sensitivity view displays a one-variable response curve, marks the baseline,
 
 ### Populate source data
 
-The repeatable loader is `populate_database.py`. It downloads the official TRACI 2.2 workbook and NASA POWER climate data, then seeds the indicator definitions:
+The repeatable loader is `populate_database.py`. It downloads the official TRACI 2.2 workbook, then seeds the indicator definitions:
 
 ```powershell
 python populate_database.py
@@ -172,29 +172,9 @@ Alternatively, CAMPD exports can be downloaded from the bulk-data or query inter
 python populate_database.py --epa-file .\campd-annual.csv
 ```
 
-After EPA facilities have been loaded, load NASA POWER climate data for the years needed by the project. The weather workflow uses the EPA facility coordinates directly; NOAA station data is not required.
-
-The loader uses NASA POWER's monthly **regional** endpoint in 10-degree latitude/longitude tiles. Regional requests return the native approximately 0.5-degree latitude by 0.625-degree longitude grid. The importer makes one request per tile and parameter, then assigns each EPA facility the nearest returned NASA grid point. This avoids one API request per facility and the point-request quota when more than 300 facilities are included.
-
-The requested NASA POWER parameters are:
-
-- `T2M`: monthly mean temperature, used for annual average temperature and cooling/heating degree days.
-- `T2M_MAX`: monthly maximum temperature, used for annual maximum temperature and the count of extreme-heat months above 35 C.
-- `T2M_MIN`: monthly minimum temperature, used for annual minimum temperature.
-- `PRECTOTCORR`: bias-corrected precipitation, converted from monthly daily-rate values to an annual millimeter estimate.
-- `WS2M`: wind speed at 2 meters, used for annual average wind speed.
-
-For each requested year, the monthly values are summarized into one row in `weather_annual_records` for each facility. CDD and HDD use an 18.3 C base temperature, and the facility coordinates, selected NASA grid coordinates, units, degree-day base, and regional-grid resolution are retained in the row metadata. The active command is:
-
-```powershell
-python populate_database.py --nasa-weather --years 2020,2021,2022,2023,2024 --weather-workers 16
-```
-
-The `--weather-workers` value controls concurrent regional requests; it does not create additional weather data or change the selected variables. Existing `(facility_id, reporting_year)` rows are skipped, so copying the populated SQLite database to another device preserves the loaded weather data without requiring NASA POWER access. Internet access is only needed to load missing years, refresh records, or rebuild the database.
-
 `--epa-file` accepts CSV, XLS, or XLSX. The database intentionally uses annual CAMPD grain; it does not include a daily power table because annual totals cannot be converted into valid daily observations. The loader records source URLs and creates dataset/provenance rows for each official source.
 
-The source catalog currently covers EPA CAMPD, NASA POWER climate data, and TRACI. EPA CAMPD CSV/Excel/JSON imports use the annual CAMPD model. NASA POWER annual climate summaries are persisted in `weather_annual_records`.
+The source catalog currently covers EPA CAMPD and TRACI. EPA CAMPD CSV/Excel/JSON imports use the annual CAMPD model.
 
 Run the backend tests with `pytest`.
 

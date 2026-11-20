@@ -342,7 +342,6 @@ def test_sources_endpoint_describes_supported_original_sources(client):
 
     assert response.status_code == 200
     assert response.json["epa-campd"]["supported_import"] is True
-    assert "nasa-power" not in response.json
 
 
 def test_epa_campd_retrieval_records_source_url(client, monkeypatch):

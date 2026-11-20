@@ -9,8 +9,6 @@ This design uses SQLite with SQLAlchemy ORM. Integer surrogate keys are used for
 - A dataset is an import/retrieval snapshot, while `data_provenance` records how that snapshot was obtained.
 - Upload validation is auditable: rejected rows and validation errors are retained in `upload_validation_errors`; invalid rows are never silently discarded.
 - `traci_factors` is reference data and is joined during calculations. Factors are not copied into CAMPD observations.
-- NASA POWER monthly regional data are requested from EPA facility coordinates and summarized to facility/year grain. CDD/HDD totals and extreme-heat-day counts retain their base temperature and threshold metadata.
-- Annual CAMPD data cannot prove a daily relationship with weather. This schema stays at annual CAMPD grain and uses annual NASA POWER climate summaries for comparison.
 - Relationships described as correlations, associations, or relationships must not be presented as causal conclusions without a causal analysis.
 
 ## Entity-relationship diagram
@@ -116,22 +114,6 @@ erDiagram
 		string checksum
 		text notes
 	}
-	weather_annual_records {
-		int weather_annual_record_id PK
-		int facility_id FK
-		int reporting_year
-		decimal average_temperature
-		decimal maximum_temperature
-		decimal minimum_temperature
-		decimal precipitation_total
-		decimal wind_speed_average
-		decimal cooling_degree_days
-		decimal heating_degree_days
-		int extreme_heat_days
-		decimal extreme_heat_threshold
-		string source_name
-		json measurement_unit_metadata
-	}
 	traci_factors {
 		int traci_factor_id PK
 		string pollutant
@@ -207,7 +189,6 @@ erDiagram
 	uploaded_files ||--o{ upload_validation_errors : records
 	datasets ||--o{ data_provenance : documents
 	uploaded_files o|--o{ data_provenance : describes
-	facilities ||--o{ weather_annual_records : has_climate_summary
 	traci_factors o|--o{ indicator_definitions : informs
 	indicator_definitions ||--o{ calculated_indicators : defines
 	facilities o|--o{ calculated_indicators : subject_of
@@ -225,7 +206,7 @@ Entity names match the SQLite / SQLAlchemy table names. `annual_records` holds u
 
 ## SQLAlchemy conventions
 
-`DateTime(timezone=True)` is used for timestamps stored in UTC. `Date` is used for calendar dates. `Numeric(20, 6)` is preferred for measurements where precision matters; `Float` is acceptable for geographic coordinates and weather values where source precision varies. Boolean fields use `Boolean`. Every foreign key should use `ondelete="RESTRICT"` unless the relationship is explicitly an owned child such as validation errors.
+`DateTime(timezone=True)` is used for timestamps stored in UTC. `Date` is used for calendar dates. `Numeric(20, 6)` is preferred for measurements where precision matters; `Float` is acceptable for geographic coordinates where source precision varies. Boolean fields use `Boolean`. Every foreign key should use `ondelete="RESTRICT"` unless the relationship is explicitly an owned child such as validation errors.
 
 ## 1. `datasets`
 
@@ -237,7 +218,7 @@ Entity names match the SQLite / SQLAlchemy table names. `annual_records` holds u
 
 - `dataset_id`: `Integer`, non-null.
 - `dataset_name`: `String(200)`, non-null.
-- `data_source`: `String(100)`, non-null, e.g. `EPA CAMPD`, `NASA POWER`, `TRACI`.
+- `data_source`: `String(100)`, non-null, e.g. `EPA CAMPD` or `TRACI`.
 - `reporting_year`: `Integer`, nullable when a dataset spans years; check `1900 <= value <= 2200` when present.
 - `retrieval_or_upload_date`: `DateTime(timezone=True)`, non-null.
 - `original_filename`: `String(255)`, nullable for API retrievals.
@@ -278,7 +259,7 @@ Entity names match the SQLite / SQLAlchemy table names. `annual_records` holds u
 
 **Indexes:** `epa_facility_id` (unique), `(state, county)`, `facility_name`.
 
-**Relationships:** one-to-many with `units` and `weather_annual_records`.
+**Relationships:** one-to-many with `units`.
 
 ## 3. `units`
 
@@ -453,31 +434,6 @@ Entity names match the SQLite / SQLAlchemy table names. `annual_records` holds u
 
 **Relationships:** many-to-one with `datasets` and optionally `uploaded_files`.
 
-## 9. `weather_annual_records`
-
-**Purpose:** One annual NASA POWER climate summary for one EPA facility. This is the active weather grain used by the project to retain annual temperature, precipitation, wind, degree-day, and extreme-heat metrics without storing daily observations.
-
-**Primary key:** `weather_annual_record_id` (`Integer`, non-null, identity).
-
-**Columns:**
-
-- `weather_annual_record_id`: `Integer`, non-null.
-- `facility_id`: `Integer`, non-null, FK to `facilities.facility_id`.
-- `reporting_year`: `Integer`, non-null.
-- `average_temperature`: `Numeric(10, 3)`, nullable; mean daily temperature in C.
-- `maximum_temperature`: `Numeric(10, 3)`, nullable; annual maximum daily temperature in C.
-- `minimum_temperature`: `Numeric(10, 3)`, nullable; annual minimum daily temperature in C.
-- `precipitation_total`: `Numeric(14, 4)`, nullable; annual total in mm.
-- `wind_speed_average`: `Numeric(10, 3)`, nullable; annual mean in m/s.
-- `cooling_degree_days`: `Numeric(12, 3)`, nullable; annual total using an 18.3 C base.
-- `heating_degree_days`: `Numeric(12, 3)`, nullable; annual total using an 18.3 C base.
-- `extreme_heat_days`: `Integer`, non-null; count of days with TMAX at or above 35 C.
-- `extreme_heat_threshold`: `Numeric(10, 3)`, nullable.
-- `source_name`: `String(100)`, non-null; `NASA POWER` for the active importer.
-- `measurement_unit_metadata`: `JSON`, nullable; includes facility coordinates, selected NASA grid coordinates, units, resolution, and degree-day base.
-
-**Unique constraints:** `uq_weather_facility_year` on `(facility_id, reporting_year)`.
-
 **Relationships:** many-to-one with `facilities`.
 
 ## 10. `indicator_definitions`
@@ -504,7 +460,7 @@ Entity names match the SQLite / SQLAlchemy table names. `annual_records` holds u
 
 The implementation also includes nullable `facility_id`, `unit_id`, and `dataset_id` foreign keys, plus `period_grain`, `period_start`, and `period_end`. These fields allow an indicator to represent a unit-level annual value, a facility-level monthly aggregate, or a weather summary without copying source observations.
 
-Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx per MWh`, TRACI global-warming/acidification/eutrophication/smog impacts, `average temperature`, `CDD`, `HDD`, `extreme heat day count`, `coal generation share`, and `natural gas generation share`.
+Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx per MWh`, TRACI global-warming/acidification/eutrophication/smog impacts, `coal generation share`, and `natural gas generation share`.
 
 **Constraints:** at least one source or subject (`annual_record_id`, `facility_id`, or `unit_id`) must be non-null; `period_end >= period_start`. Keep the calculation formula, input units, base temperature, extreme-heat threshold, and source dataset IDs in `calculation_parameters`.
 
@@ -562,15 +518,13 @@ Useful `indicator_name` definitions include `CO2 per MWh`, `SO2 per MWh`, `NOx p
 4. Require explicit approval. On cancellation, keep metadata and validation errors but import no observations.
 5. Upsert normalized facilities and units, then insert accepted observations into `annual_records` inside one transaction.
 6. Mark the dataset and upload `imported` only after the transaction succeeds.
-7. For weather analysis, use the NASA POWER annual summary for the facility and requested year; never infer daily emissions from annual totals.
-8. Download results as CSV from explicit queries, including dataset/provenance identifiers and units.
+7. Download results as CSV from explicit queries, including dataset/provenance identifiers and units.
 
 ## Recommended SQLAlchemy relationship summary
 
 - `Dataset.annual_records`, `Dataset.uploaded_files`, `Dataset.provenance`
-- `Facility.units`, `Facility.weather_annual_records`
+- `Facility.units`
 - `Unit.annual_records`
-- `WeatherAnnualRecord.facility`
 - `UploadedFile.validation_errors`
 - `IndicatorDefinition.calculated_indicators`, `WeightScenario.weights`, `WeightScenario.score_results`
 
@@ -583,24 +537,18 @@ Use `relationship(..., cascade="all, delete-orphan")` only for owned child recor
 Use four small layers:
 
 1. **Raw intake and provenance:** `uploaded_files`, `upload_validation_errors`, `datasets`, and `data_provenance`.
-2. **Normalized observations:** `facilities`, `units`, `annual_records`, and `weather_annual_records`.
+2. **Normalized observations:** `facilities`, `units`, and `annual_records`.
 3. **Reference and derived evaluation:** `traci_factors`, `indicator_definitions`, and `calculated_indicators`.
 4. **Scenario evaluation:** `weight_scenarios`, `scenario_weights`, and `score_results`.
 
 Pandas should handle file parsing and validation. SQLAlchemy should handle transactional imports and application queries. Keep uploaded files outside SQLite and store only a controlled `storage_reference`, SHA-256 hash, and metadata in the database.
-
-### 2. Recommended climate product
-
-Use **NASA POWER monthly regional data** for the active climate implementation. It provides 1981-present monthly meteorological time series on NASA POWER's native regional grid, including temperature, precipitation, and wind. The importer requests that grid in 10-degree tiles and maps each EPA facility coordinate to its nearest grid point, avoiding one point request per facility and the API's 300-request quota. Store source units and convert to a project display unit only in the analysis layer.
-
-For each import, record the NASA POWER endpoint, requested parameters, facility coordinates, retrieval date, selected grid coordinates, source resolution, and conversion metadata. Annual summaries use the `(facility_id, reporting_year)` key.
 
 ### 3. Complete entity/relationship overview
 
 ```text
 facilities 1---* units 1---* annual_records *---1 datasets
     |                              |
-    +---* weather_annual_records   +---* uploaded_files 1---* upload_validation_errors
+    +                              +---* uploaded_files 1---* upload_validation_errors
     |                              +---* data_provenance
     |
     +---o calculated_indicators / score_results (optional subjects)
@@ -625,7 +573,7 @@ The complete table-by-table specification is in sections 1-14 above. The executa
 
 ### 5. Primary keys and foreign keys
 
-Each table has an integer surrogate primary key. External identifiers remain separately constrained: EPA facility IDs are unique in `facilities`, EPA unit IDs are unique within a facility, and uploaded content hashes can prevent duplicate imports. Foreign keys preserve the chain from annual observations and climate summaries to units, facilities, datasets, and provenance.
+Each table has an integer surrogate primary key. External identifiers remain separately constrained: EPA facility IDs are unique in `facilities`, EPA unit IDs are unique within a facility, and uploaded content hashes can prevent duplicate imports. Foreign keys preserve the chain from annual observations to units, facilities, datasets, and provenance.
 
 ### 6. Unique constraints
 
@@ -634,7 +582,6 @@ The important business keys are:
 - `facilities.epa_facility_id`
 - `(units.facility_id, units.epa_unit_id)`
 - `(annual_records.unit_id, reporting_year, dataset_id)`
-- `(weather_annual_records.facility_id, reporting_year)`
 - `(indicator_definitions.indicator_name, version)`
 - `(scenario_weights.weight_scenario_id, indicator_definition_id)`
 
@@ -642,32 +589,18 @@ The annual key intentionally includes `dataset_id` so a new source snapshot can 
 
 ### 7. Recommended indexes and search strategy
 
-The model indexes the high-value filters directly: EPA IDs, facility name, state/county, fuels, unit type, reporting year, dataset/year, emissions, operating time, load, heat input, facility/year weather summaries, temperatures, CDD, and extreme-heat status. Composite indexes follow the common leading predicates, such as `(reporting_year, unit_id)` and `(facility_id, reporting_year)`.
+The model indexes the high-value filters directly: EPA IDs, facility name, state/county, fuels, unit type, reporting year, dataset/year, emissions, operating time, load, and heat input. Composite indexes follow common leading predicates, such as `(reporting_year, unit_id)` and `(facility_id, reporting_year)`.
 
 For SQLite, ordinary B-tree indexes support equality and range filters such as `co2_mass >= :minimum` and `gross_load BETWEEN :low AND :high`. Top-N and bottom-N queries should use `ORDER BY ... DESC/ASC LIMIT :n`; group-and-rank queries should aggregate first and use a window function such as `DENSE_RANK()` when the SQLite version supports it. Do not index every nullable measurement automatically; add an index after a query is demonstrated to need it.
 
-### 8. How CAMPD, weather, and TRACI relate
+### 8. How CAMPD and TRACI relate
 
 - CAMPD observations provide facility/unit operating and emissions measures.
-- `weather_annual_records` provides facility/year NASA POWER summaries for comparison with annual CAMPD.
-- TRACI factors remain versioned reference data. An indicator definition selects the relevant factor, and a calculation applies it to pollutant quantities. Factors are not duplicated into annual or weather rows.
-- All weather findings should be reported as associations or correlations unless a separate causal design is performed.
-
-### 9. Annual climate data handling
-
-Keep `annual_records` and `weather_annual_records` at year grain. Join annual weather directly through `facility_id` and compare mean temperature, maximum temperature, total precipitation, total CDD, total HDD, and extreme-heat-day counts by facility/year.
-
-`weather_annual_records` is populated from NASA POWER monthly values, and `calculated_indicators` may cache a further annual aggregate when it is expensive or repeatedly displayed.
-
-### 10. CDD, HDD, and extreme heat
-
-Calculate CDD and HDD from NASA POWER monthly mean temperatures using an explicitly documented base temperature, normally 65 F (18.3 C), weighting the monthly values to an annual equivalent. Store annual totals in `weather_annual_records` with the base temperature, source resolution, and units in `measurement_unit_metadata`.
-
-Extreme heat should be a derived classification, not a raw source fact. Store `extreme_heat_days` and `extreme_heat_threshold` only when the threshold is known. A percentile threshold by point and reference period is preferable for cross-climate comparisons; a fixed threshold is simpler for Phase 2.
+- TRACI factors remain versioned reference data. An indicator definition selects the relevant factor, and a calculation applies it to pollutant quantities. Factors are not duplicated into annual records.
 
 ### 11. SQLAlchemy model code
 
-The complete declarative model implementation is [models.py](models.py). It defines `Base`, all 14 entities, typed relationships, `ForeignKey`, `UniqueConstraint`, `CheckConstraint`, and `Index` declarations, plus `initialize_database()` for a course-project bootstrap.
+The complete declarative model implementation is [models.py](models.py). It defines `Base`, the project entities, typed relationships, `ForeignKey`, `UniqueConstraint`, `CheckConstraint`, and `Index` declarations, plus `initialize_database()` for a course-project bootstrap.
 
 ### 12. Example queries
 
@@ -712,7 +645,7 @@ fuel_totals = (
 
 ```
 
-For annual CAMPD plus climate, join `WeatherAnnualRecord` to `AnnualRecord.reporting_year` through `facility_id`. Compare groups with explicit sample sizes and missing-data rules. Calculate CO2/MWh only when the denominator is present and nonzero; never replace a missing or zero gross load with an arbitrary value.
+Compare annual CAMPD groups with explicit sample sizes and missing-data rules. Calculate CO2/MWh only when the denominator is present and nonzero; never replace a missing or zero gross load with an arbitrary value.
 
 ### 13. Recommended database initialization and Week 2 steps
 
@@ -736,9 +669,8 @@ epaData/
 Recommended Week 2 sequence:
 
 1. Create the Flask application factory, SQLite configuration, SQLAlchemy session, and migration setup.
-2. Run the model smoke test against in-memory SQLite and add fixtures for one facility, unit, annual record, and weather record.
+2. Run the model smoke test against in-memory SQLite and add fixtures for one facility, unit, and annual record.
 3. Implement CSV/XLSX extension and file-size checks, pandas loading, required-column checks, type/domain checks, null checks, and duplicate-key checks.
 4. Persist an upload preview and `upload_validation_errors`; require approval before inserting accepted facilities, units, and annual records.
 5. Add indexed facility/unit/year/fuel/emissions search and CSV download.
-6. Import a small NASA POWER sample, calculate CDD/HDD with documented units, and test a facility annual climate summary.
-7. Add pytest coverage for rejected rows, duplicate prevention, rollback on failed import, range filters, and the annual weather aggregation boundary.
+6. Add pytest coverage for rejected rows, duplicate prevention, rollback on failed import, and range filters.

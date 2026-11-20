@@ -81,7 +81,6 @@ class Facility(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     units: Mapped[list[Unit]] = relationship(back_populates="facility")
-    weather_annual_records: Mapped[list[WeatherAnnualRecord]] = relationship(back_populates="facility")
     calculated_indicators: Mapped[list[CalculatedIndicator]] = relationship(back_populates="facility")
     score_results: Mapped[list[ScoreResult]] = relationship(back_populates="facility")
 
@@ -247,32 +246,6 @@ class DataProvenance(Base):
 
     dataset: Mapped[Dataset] = relationship(back_populates="provenance")
     uploaded_file: Mapped[UploadedFile | None] = relationship(back_populates="provenance")
-
-
-class WeatherAnnualRecord(Base):
-    __tablename__ = "weather_annual_records"
-    __table_args__ = (
-        UniqueConstraint("facility_id", "reporting_year", name="uq_weather_facility_year"),
-        Index("ix_weather_annual_facility_year", "facility_id", "reporting_year"),
-        Index("ix_weather_annual_year", "reporting_year"),
-    )
-
-    weather_annual_record_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    facility_id: Mapped[int] = mapped_column(ForeignKey("facilities.facility_id", ondelete="RESTRICT"), nullable=False)
-    reporting_year: Mapped[int] = mapped_column(Integer, nullable=False)
-    average_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    maximum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    minimum_temperature: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    precipitation_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
-    wind_speed_average: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    cooling_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
-    heating_degree_days: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
-    extreme_heat_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    extreme_heat_threshold: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
-    source_name: Mapped[str] = mapped_column(String(100), nullable=False, default="NASA POWER")
-    measurement_unit_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-
-    facility: Mapped[Facility] = relationship(back_populates="weather_annual_records")
 
 
 class IndicatorDefinition(Base):
