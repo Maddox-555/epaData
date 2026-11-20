@@ -22,6 +22,17 @@ Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser. Stop the 
 
 The app reads the SQLite database `epa_data.db` in the repository root, so run `python app.py` from that folder. The committed database already contains CAMPD 2020–2024, TRACI 2.2, and NASA POWER data; see [Populate source data](#populate-source-data) only if you need to rebuild or extend it.
 
+For a new database, copy `.env.example` to `.env` or set the variables in
+PowerShell, then initialize the schema with Alembic:
+
+```powershell
+Copy-Item .env.example .env
+alembic upgrade head
+```
+
+`.env` is ignored by Git. Never place a real API key in `.env.example`,
+JavaScript, a URL, a CSV file, or source control.
+
 The EPA Retrieval page needs the server-side `EPA_API_KEY` environment variable. Configure it in the same PowerShell session used to start Flask:
 
 ```powershell
