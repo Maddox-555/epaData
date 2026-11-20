@@ -377,7 +377,7 @@
         </div>
         <form id="prediction-form" class="form-grid compact-form">
           <div class="form-field"><label>State filter (optional)</label><input name="state" maxlength="2" placeholder="e.g. KY"></div>
-          <div class="form-actions full"><button class="primary" type="submit">Run prediction</button></div>
+          <div class="form-actions full"><button class="primary" type="submit">Run prediction</button><a class="secondary download-link" id="download-prediction" hidden>Download results</a></div>
         </form>
         <div id="prediction-status" class="status"></div>
         <div id="prediction-splits" class="prediction-splits"></div>
@@ -403,6 +403,24 @@
             <h2>Selected model feature importance</h2>
             <div id="prediction-importance-chart" class="plot"></div>
           </div>
+        </div>
+        <div class="panel prediction-analysis-panel">
+          <div class="results-header"><h2>Sensitivity and scenario analysis</h2><span class="panel-note">These charts show model response, not causal effects.</span></div>
+          <form id="sensitivity-form" class="form-grid compact-form">
+            <div class="form-field"><label>Facility ID (optional)</label><input name="facility_id" placeholder="Uses final-test unit if blank"></div>
+            <div class="form-field"><label>Unit ID (optional)</label><input name="unit_id"></div>
+            <div class="form-field"><label>Model</label><select name="model"><option value="">Best validation model</option><option value="random_forest">Random forest</option><option value="ridge">Ridge regression</option><option value="mean_baseline">Mean baseline</option></select></div>
+            <div class="form-field"><label>Input to vary</label><select name="feature"><option value="gross_load">Gross load</option><option value="heat_input">Heat input</option><option value="operating_time">Operating time</option><option value="co2_mass">Prior-year CO₂</option><option value="so2_mass">Prior-year SO₂</option><option value="nox_mass">Prior-year NOx</option></select></div>
+            <div class="form-field"><label>Minimum value</label><input name="minimum" type="number" step="any" placeholder="Default: 80% of baseline"></div>
+            <div class="form-field"><label>Maximum value</label><input name="maximum" type="number" step="any" placeholder="Default: 120% of baseline"></div>
+            <div class="form-field"><label>Step count</label><input name="steps" type="number" min="2" max="51" value="11"></div>
+            <div class="form-actions full"><small class="panel-note">Minimum and maximum use the feature's actual units, not percentages. For percentage changes, use Run scenarios.</small></div>
+            <div class="form-actions full"><button class="primary" type="submit">Run sensitivity</button><button class="secondary" type="button" id="run-default-scenarios">Run scenarios</button><a class="secondary download-link" id="download-sensitivity" hidden>Download CSV</a></div>
+          </form>
+          <div id="prediction-analysis-status" class="status"></div>
+          <div id="prediction-analysis-warning" class="prediction-warning"></div>
+          <div id="sensitivity-chart" class="plot"></div>
+          <div id="scenario-chart" class="plot"></div>
         </div>
       </div>
     </section>

@@ -34,7 +34,7 @@ from data_service import (
     retrieve_dataframe,
     summarize_analysis_metric,
 )
-from prediction_service import run_prediction
+from prediction_service import run_prediction, run_scenarios, run_sensitivity
 from models import AnnualRecord, Base, DataProvenance, Dataset, Facility, TraciFactor, Unit, UploadValidationError
 
 
@@ -122,6 +122,9 @@ def create_app(database_url: str | None = None) -> Flask:
                 "annual_records_csv": "/api/annual-records.csv",
                 "analysis": "/api/analysis",
                 "prediction": "/api/prediction",
+                "prediction_csv": "/api/prediction.csv",
+                "prediction_sensitivity": "/api/prediction/sensitivity",
+                "prediction_scenarios": "POST /api/prediction/scenarios",
                 "upload": "POST /api/data/upload",
                 "retrieve": "POST /api/data/retrieve",
             },
@@ -371,6 +374,63 @@ def create_app(database_url: str | None = None) -> Flask:
                 return jsonify(run_prediction(session, state=state))
         except (ValueError, TypeError) as exc:
             return jsonify({"error": f"Invalid prediction request: {exc}"}), 400
+
+    @app.get("/api/prediction.csv")
+    def prediction_csv() -> Any:
+        state = request.args.get("state") or None
+        try:
+            with SessionLocal() as session:
+                result = run_prediction(session, state=state)
+            rows = []
+            for name, model_result in result["models"].items():
+                rows.append({
+                    "model": name,
+                    "selected": name == result["selected_model"],
+                    "validation_mae": model_result["validation"]["mae"],
+                    "test_mae": model_result["test"]["mae"],
+                    "test_rmse": model_result["test"]["rmse"],
+                    "test_r2": model_result["test"]["r2"],
+                    "test_mape": model_result["test"]["mape"],
+                })
+            return _csv_file(rows, "prediction-results.csv")
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid prediction export request: {exc}"}), 400
+
+    @app.get("/api/prediction/sensitivity")
+    def prediction_sensitivity() -> Any:
+        try:
+            minimum = request.args.get("minimum")
+            maximum = request.args.get("maximum")
+            with SessionLocal() as session:
+                return jsonify(run_sensitivity(
+                    session,
+                    state=request.args.get("state") or None,
+                    facility_id=request.args.get("facility_id") or None,
+                    unit_id=request.args.get("unit_id") or None,
+                    feature=request.args.get("feature", "gross_load"),
+                    minimum=float(minimum) if minimum else None,
+                    maximum=float(maximum) if maximum else None,
+                    steps=int(request.args.get("steps", 11)),
+                    model_name=request.args.get("model") or None,
+                ))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid sensitivity request: {exc}"}), 400
+
+    @app.post("/api/prediction/scenarios")
+    def prediction_scenarios() -> Any:
+        payload = request.get_json(silent=True) or {}
+        try:
+            with SessionLocal() as session:
+                return jsonify(run_scenarios(
+                    session,
+                    state=payload.get("state") or None,
+                    facility_id=payload.get("facility_id") or None,
+                    unit_id=payload.get("unit_id") or None,
+                    scenarios=payload.get("scenarios"),
+                    model_name=payload.get("model") or None,
+                ))
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": f"Invalid scenario request: {exc}"}), 400
 
     @app.get("/api/analysis/dataset")
     def analysis_dataset() -> Any:

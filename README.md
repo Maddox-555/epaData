@@ -112,12 +112,17 @@ The Explorer CSV download reads the populated SQLite database through `/api/annu
 - `GET /api/rankings` - rank by `metric` and `group_by=unit|facility|state`.
 - `GET /api/compare?facility_ids=100,200&reporting_year=2024` - return comparable records for selected facilities or unit IDs.
 - `GET /api/prediction` - predict next-year unit CO₂ emissions with a mean baseline, Ridge regression, and random-forest regression. The response reports chronological train/validation/test splits and MAE, RMSE, R², and MAPE for each model. Add `state=KY` to restrict the training data.
+- `GET /api/prediction.csv` - download model evaluation metrics for the selected state filter.
+- `GET /api/prediction/sensitivity` - vary one numeric prior-year input while holding the selected final-test unit's other features constant. Supports `feature`, `facility_id`, `unit_id`, `minimum`, `maximum`, and `steps`; reports baseline, predictions, absolute/percentage changes, training ranges, and out-of-range warnings.
+- `POST /api/prediction/scenarios` - compare named scenarios against a final-test baseline. The JSON body accepts `state`, `facility_id`, `unit_id`, and `scenarios`, where each scenario has a `name` and `changes` object. Numeric changes may use `{ "percent": 10 }` for a relative change.
 
 ### Prediction module
 
 The prediction dashboard uses one defined regression objective: next-year unit CO₂ emissions in short tons. Each prediction row uses only the prior year's observed emissions, load, heat input, operating time, fuel, unit type, state, controls, program, and reporting year; the next year's CO₂ target is never included as a feature. Target years are split chronologically: earlier years for training, the penultimate year for validation, and the most recent year for final testing. The validation MAE selects the displayed model.
 
 The module compares a mean baseline with Ridge regression and random-forest regression. It reports mean absolute error, root mean squared error, R², and nonzero-target MAPE. Results are predictive associations only and should not be interpreted as causal conclusions.
+
+The sensitivity view displays a one-variable response curve, marks the baseline, exports the response points, and warns when requested inputs fall outside the training-data range. The scenario view compares the baseline with named alternatives such as gross load increased by 10 percent or heat input reduced by 5 percent. These results describe model behavior and are not causal estimates.
 
 ### Populate source data
 

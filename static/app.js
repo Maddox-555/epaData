@@ -123,14 +123,12 @@ function runSearch(offset = 0, baseParams = null) {
     .then(({ ok, data }) => {
       if (!ok) throw new Error(data.error || "Search failed.");
       renderResults(data);
-      renderChart(data.records); // NEW: Draw chart on success
     })
     .catch(error => {
       lastResponse = null;
       resultsBody.replaceChildren();
       pagination.hidden = true;
       resultsCount.textContent = error.message;
-      renderChart([]); // NEW: Clear chart on error
     });
 }
 
@@ -179,7 +177,6 @@ clearFiltersBtn.addEventListener("click", () => {
   pagination.hidden = true;
   resultsCount.textContent = "Run a search to see results.";
   history.replaceState(null, "", window.location.pathname);
-  renderChart([]); // NEW: Clear chart when filters are cleared
 });
 
 downloadCsvBtn.addEventListener("click", () => {
@@ -336,6 +333,11 @@ const predictionStatus = document.getElementById("prediction-status");
 const predictionSplits = document.getElementById("prediction-splits");
 const predictionResults = document.getElementById("prediction-results");
 const predictionSummary = document.getElementById("prediction-summary");
+const downloadPrediction = document.getElementById("download-prediction");
+const sensitivityForm = document.getElementById("sensitivity-form");
+const predictionAnalysisStatus = document.getElementById("prediction-analysis-status");
+const predictionAnalysisWarning = document.getElementById("prediction-analysis-warning");
+const downloadSensitivity = document.getElementById("download-sensitivity");
 let currentAnalysisParams = new URLSearchParams();
 let currentAnalysisDataset = null;
 let currentAnalysisSummary = null;
@@ -385,6 +387,18 @@ function plotLayout(title, xTitle, yTitle) {
   };
 }
 
+const metricLabels = {
+  co2_mass: "CO₂ emissions (short tons)",
+  so2_mass: "SO₂ emissions (short tons)",
+  nox_mass: "NOx emissions (short tons)",
+  gross_load: "Gross load (MWh)",
+  heat_input: "Heat input (mmBtu)",
+  co2_intensity: "CO₂ intensity (short tons/MWh)",
+  so2_intensity: "SO₂ intensity (short tons/MWh)",
+  nox_intensity: "NOx intensity (short tons/MWh)",
+  heat_rate: "Heat rate (mmBtu/MWh)"
+};
+
 function renderSummary(summary, metric, groupBy, chartType, records) {
   renderStatCards(summary.summary);
   const rows = summary.results.slice().sort((a, b) => (b.mean ?? 0) - (a.mean ?? 0)).slice(0, 25);
@@ -427,7 +441,7 @@ function renderSummary(summary, metric, groupBy, chartType, records) {
       hovertemplate: "%{x}<br>Mean: %{y:,.3f}<extra></extra>"
     }];
   }
-  const layout = plotLayout(`${metric} visualization`, groupBy, "Value");
+  const layout = plotLayout(`${metricLabels[metric] || metric} visualization`, groupBy, metricLabels[metric] || "Value");
   if (chartType === "map") {
     delete layout.xaxis;
     delete layout.yaxis;
@@ -450,7 +464,7 @@ function renderTrend(records, metric) {
   Plotly.newPlot("trend-chart", [{
     x: years, y: means, type: "scatter", mode: "lines+markers",
     line: {color: "#2563eb"}, hovertemplate: "%{x}<br>Mean: %{y:,.3f}<extra></extra>"
-  }], plotLayout(`${metric} trend`, "Reporting year", "Mean value"), {responsive: true, displaylogo: false});
+  }], plotLayout(`${metricLabels[metric] || metric} trend`, "Reporting year", metricLabels[metric] || "Mean value"), {responsive: true, displaylogo: false});
 }
 
 async function loadAnalysis() {
@@ -545,6 +559,10 @@ predictionForm.addEventListener("submit", async event => {
     const response = await fetch(`/api/prediction?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Prediction request failed.");
+    const predictionExportParams = new URLSearchParams();
+    if (params.get("state")) predictionExportParams.set("state", params.get("state"));
+    downloadPrediction.href = `/api/prediction.csv?${predictionExportParams}`;
+    downloadPrediction.hidden = false;
     const test = data.splits.test;
     predictionStatus.textContent = `${data.objective} Selected model: ${data.selected_model.replace("_", " ")}.`;
     [
@@ -609,6 +627,97 @@ predictionForm.addEventListener("submit", async event => {
     Plotly.purge("prediction-chart");
     Plotly.purge("prediction-importance-chart");
     Plotly.purge("prediction-trend-chart");
+  }
+});
+
+function setPredictionDownload(rows, filename) {
+  const headers = Object.keys(rows[0] || {});
+  const csv = [headers.join(","), ...rows.map(row => headers.map(header => JSON.stringify(row[header] ?? "")).join(","))].join("\n");
+  downloadSensitivity.href = URL.createObjectURL(new Blob([csv], {type: "text/csv"}));
+  downloadSensitivity.download = filename;
+  downloadSensitivity.hidden = false;
+}
+
+sensitivityForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const params = new URLSearchParams(new FormData(sensitivityForm));
+  const state = predictionForm.elements.namedItem("state").value.trim();
+  if (state) params.set("state", state);
+  predictionAnalysisStatus.textContent = "Running sensitivity analysis…";
+  predictionAnalysisWarning.textContent = "";
+  try {
+    const response = await fetch(`/api/prediction/sensitivity?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Sensitivity request failed.");
+    predictionAnalysisStatus.textContent = `Model: ${data.model.replace("_", " ")}. Baseline prediction: ${formatNumber(data.baseline.prediction)} short tons.`;
+    predictionAnalysisWarning.textContent = data.warning || "";
+    const sensitivityLayout = plotLayout(`${data.feature} sensitivity`, data.feature, "Predicted CO₂ (short tons)");
+    sensitivityLayout.shapes = [
+      {type: "line", x0: data.baseline.input_value, x1: data.baseline.input_value, y0: 0, y1: 1, yref: "paper", line: {color: "#f59e0b", dash: "dot"}},
+      {type: "line", x0: 0, x1: 1, xref: "paper", y0: data.baseline.prediction, y1: data.baseline.prediction, line: {color: "#f59e0b", dash: "dot"}}
+    ];
+    if (data.training_range.minimum !== null && data.training_range.maximum !== null) {
+      const inputs = data.points.map(point => point.input_value);
+      if (Math.min(...inputs) < data.training_range.minimum) {
+        sensitivityLayout.shapes.push({type: "rect", x0: Math.min(...inputs), x1: data.training_range.minimum, y0: 0, y1: 1, yref: "paper", fillcolor: "#fca5a5", opacity: 0.25, line: {width: 0}});
+      }
+      if (Math.max(...inputs) > data.training_range.maximum) {
+        sensitivityLayout.shapes.push({type: "rect", x0: data.training_range.maximum, x1: Math.max(...inputs), y0: 0, y1: 1, yref: "paper", fillcolor: "#fca5a5", opacity: 0.25, line: {width: 0}});
+      }
+    }
+    Plotly.newPlot("sensitivity-chart", [{
+      x: data.points.map(point => point.input_value),
+      y: data.points.map(point => point.prediction),
+      type: "scatter", mode: "lines+markers", name: "Prediction",
+      marker: {color: "#2563eb"},
+      customdata: data.points.map(point => [point.absolute_change, point.percentage_change, point.outside_training_range ? "Yes" : "No"]),
+      hovertemplate: "Input: %{x:,.3f}<br>Prediction: %{y:,.3f}<br>Change: %{customdata[0]:,.3f}<br>Change: %{customdata[1]:.2f}%<br>Outside training range: %{customdata[2]}<extra></extra>"
+    }, {
+      x: [data.baseline.input_value], y: [data.baseline.prediction],
+      type: "scatter", mode: "markers", name: "Baseline", marker: {color: "#f59e0b", size: 12}
+    }], sensitivityLayout, {responsive: true, displaylogo: false});
+    setPredictionDownload(data.points.map(point => ({feature: data.feature, ...point})), "prediction-sensitivity.csv");
+  } catch (error) {
+    predictionAnalysisStatus.textContent = error.message;
+    predictionAnalysisWarning.textContent = "";
+    Plotly.purge("sensitivity-chart");
+  }
+});
+
+document.getElementById("run-default-scenarios").addEventListener("click", async () => {
+  const state = predictionForm.elements.namedItem("state").value.trim();
+  predictionAnalysisStatus.textContent = "Running scenarios…";
+  predictionAnalysisWarning.textContent = "";
+  try {
+    const response = await fetch("/api/prediction/scenarios", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        state,
+        facility_id: sensitivityForm.elements.namedItem("facility_id").value.trim(),
+        unit_id: sensitivityForm.elements.namedItem("unit_id").value.trim(),
+        model: sensitivityForm.elements.namedItem("model").value,
+        scenarios: [
+          {name: "Gross load +10%", changes: {gross_load: {percent: 10}}},
+          {name: "Heat input -5%", changes: {heat_input: {percent: -5}}},
+          {name: "High-efficiency combination", changes: {gross_load: {percent: 10}, heat_input: {percent: -5}}}
+        ]
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Scenario request failed.");
+    predictionAnalysisStatus.textContent = `Model: ${data.model.replace("_", " ")}. Baseline prediction: ${formatNumber(data.baseline.prediction)} short tons.`;
+    predictionAnalysisWarning.textContent = data.warning || "";
+    Plotly.newPlot("scenario-chart", [{
+      x: data.scenarios.map(scenario => scenario.name),
+      y: data.scenarios.map(scenario => scenario.prediction),
+      type: "bar", marker: {color: ["#2563eb", "#10b981", "#f59e0b", "#7c3aed"]},
+      customdata: data.scenarios.map(scenario => [scenario.absolute_change, scenario.percentage_change, scenario.outside_training_range ? "Yes" : "No"]),
+      hovertemplate: "%{x}<br>Prediction: %{y:,.3f}<br>Change: %{customdata[0]:,.3f}<br>Change: %{customdata[1]:.2f}%<br>Outside training range: %{customdata[2]}<extra></extra>"
+    }], plotLayout("Scenario prediction comparison", "Scenario", "Predicted CO₂ (short tons)"), {responsive: true, displaylogo: false});
+    setPredictionDownload(data.scenarios, "prediction-scenarios.csv");
+  } catch (error) {
+    predictionAnalysisStatus.textContent = error.message;
+    Plotly.purge("scenario-chart");
   }
 });
 

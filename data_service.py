@@ -898,6 +898,12 @@ def _traci_lookup_factors(session: Session, pollutant: str | None = None, impact
 
 
 def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_category: str = "global warming", pollutant: str | None = None, group_by: str = "facility", normalize_by: str | None = None) -> dict[str, Any]:
+    if group_by not in {"facility", "state", "unit", "year", "fuel", "unit_type"}:
+        raise ValueError("unsupported impact grouping")
+    if normalize_by not in {None, "gross_load"}:
+        raise ValueError("unsupported impact normalization")
+    if pollutant is not None and pollutant.lower() not in {"co2", "so2", "nox"}:
+        raise ValueError("unsupported pollutant")
     category = _normalize_impact_category(impact_category)
     rows = session.execute(build_annual_query(filters)).all()
     if not rows:
@@ -915,7 +921,7 @@ def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_
     factor_units: set[str] = set()
     for row in (_json_safe_record(record) for record in data.to_dict(orient="records")):
         group_key = _group_key_for_value(group_by, row)
-        group_entry = grouped.setdefault(group_key, {"group_key": group_key, "facility_name": row.get("facility_name"), "state": row.get("state"), "unit_id": row.get("unit_id"), "reporting_year": row.get("reporting_year"), "total_impact": 0.0, "records": 0})
+        group_entry = grouped.setdefault(group_key, {"group_key": group_key, "facility_name": row.get("facility_name"), "state": row.get("state"), "unit_id": row.get("unit_id"), "reporting_year": row.get("reporting_year"), "total_impact": 0.0, "normalization_total": 0.0, "records": 0})
         impact_total = 0.0
         for current in chosen_pollutants:
             source_metric = f"{current}_mass"
@@ -941,7 +947,7 @@ def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_
             group_entry["total_impact"] = float(group_entry["total_impact"]) + impact_total
             group_entry["records"] += 1
         if normalize_by and normalize_by in row and row.get(normalize_by) not in (None, 0):
-            group_entry[f"impact_per_{normalize_by}"] = float(group_entry.get(f"impact_per_{normalize_by}", 0.0)) + impact_total / float(row[normalize_by])
+            group_entry["normalization_total"] += float(row[normalize_by])
     results: list[dict[str, Any]] = []
     for entry in grouped.values():
         result = {
@@ -953,8 +959,8 @@ def calculate_traci_impact(session: Session, filters: dict[str, Any], *, impact_
             "impact": round(float(entry["total_impact"]), 6),
             "factors": entry.get("factors", []),
         }
-        if normalize_by and f"impact_per_{normalize_by}" in entry:
-            result[f"impact_per_{normalize_by}"] = round(float(entry[f"impact_per_{normalize_by}"]), 6)
+        if normalize_by and entry["normalization_total"]:
+            result[f"impact_per_{normalize_by}"] = round(result["impact"] / entry["normalization_total"], 6)
         results.append(result)
     results = [result for result in results if result["impact"] != 0]
     return {

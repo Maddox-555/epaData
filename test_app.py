@@ -215,8 +215,8 @@ def test_analysis_json_uses_null_for_undefined_derived_indicators(client):
 def test_traci_impact_returns_only_matching_groups(client):
     content = (
         b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
-        b"CO2 Mass,SO2 Mass,NOx Mass\n"
-        b"100,Test Plant,KY,U1,2022,20,10,5\n"
+        b"Gross Load,CO2 Mass,SO2 Mass,NOx Mass\n"
+        b"100,Test Plant,KY,U1,2022,20,20,10,5\n"
     )
     assert upload(client, content, approve=True).json["status"] == "imported"
     with client.application.extensions["epa_sessionmaker"]() as session:
@@ -243,6 +243,14 @@ def test_traci_impact_returns_only_matching_groups(client):
     assert acidification.json["traci_version"] == "2.2"
     assert acidification.json["matched_factor_count"] == 2
     assert [row["group_key"] for row in acidification.json["results"]] == ["KY"]
+    assert acidification.json["total_impact"] == pytest.approx((10 + 5 * 0.7) * 907.18474, rel=1e-6)
+
+    normalized = client.get("/api/analysis/impact", query_string={
+        "impact_category": "acidification", "group_by": "state", "normalize_by": "gross_load",
+    })
+    assert normalized.json["results"][0]["impact_per_gross_load"] == pytest.approx(
+        (10 + 5 * 0.7) * 907.18474 / 20, rel=1e-6
+    )
 
     human_health = client.get("/api/analysis/impact", query_string={
         "impact_category": "human health", "group_by": "state",
@@ -293,6 +301,40 @@ def test_prediction_uses_chronological_splits_and_excludes_target_leakage(client
     assert {item["feature"] for item in result["feature_importance"]} == set(result["features"])
     assert [row["year"] for row in result["co2_trend"]] == [2021, 2022, 2023]
     assert result["co2_trend"][-1]["predicted_co2"] is not None
+    assert client.get("/api/prediction.csv").headers["Content-Type"] == "text/csv; charset=utf-8"
+
+
+def test_prediction_sensitivity_and_scenarios_return_model_response_data(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
+        b"Gross Load,Heat Input,CO2 Mass\n"
+        b"100,Test Plant,KY,U1,2020,10,20,100\n"
+        b"100,Test Plant,KY,U1,2021,11,21,110\n"
+        b"100,Test Plant,KY,U1,2022,12,22,120\n"
+        b"100,Test Plant,KY,U1,2023,13,23,130\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+
+    sensitivity = client.get("/api/prediction/sensitivity", query_string={
+        "state": "KY", "unit_id": "U1", "feature": "gross_load", "steps": 5,
+    })
+    assert sensitivity.status_code == 200, sensitivity.json
+    assert len(sensitivity.json["points"]) == 5
+    assert sensitivity.json["baseline"]["unit_id"] == "U1"
+
+    scenarios = client.post("/api/prediction/scenarios", json={
+        "state": "KY", "unit_id": "U1",
+        "scenarios": [{"name": "Higher load", "changes": {"gross_load": {"percent": 10}}}],
+    })
+    assert scenarios.status_code == 200, scenarios.json
+    assert [row["name"] for row in scenarios.json["scenarios"]] == ["Baseline", "Higher load"]
+
+    invalid_range = client.get("/api/prediction/sensitivity", query_string={
+        "state": "KY", "unit_id": "U1", "feature": "gross_load",
+        "minimum": "-5", "maximum": "10",
+    })
+    assert invalid_range.status_code == 400
+    assert "non-negative" in invalid_range.json["error"]
 
 
 def test_sources_endpoint_describes_supported_original_sources(client):
