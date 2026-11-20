@@ -788,12 +788,27 @@ def build_analysis_dataset(session: Session, filters: dict[str, Any], *, limit: 
     all_rows = session.execute(query).all()
     rows = all_rows[:limit]
     dataframe = _records_to_dataframe(rows)
+    all_dataframe = _records_to_dataframe(all_rows)
     metrics = [metric for metric in ANALYSIS_METRICS if metric in dataframe.columns]
     values = [_json_safe_record(record) for record in dataframe.to_dict(orient="records")]
     missing_summary: dict[str, Any] = {}
     for metric in metrics:
         metric_values = dataframe[metric].tolist()
         missing_summary[metric] = sum(1 for item in metric_values if pd.isna(item))
+    trend_metric = str(filters.get("metric") or "co2_mass")
+    if trend_metric not in ANALYSIS_METRICS:
+        trend_metric = "co2_mass"
+    trend: list[dict[str, Any]] = []
+    if not all_dataframe.empty and trend_metric in all_dataframe.columns:
+        for year, group in all_dataframe.groupby("reporting_year", dropna=False):
+            numeric = pd.to_numeric(group[trend_metric], errors="coerce").dropna()
+            if pd.notna(year) and not numeric.empty:
+                trend.append({
+                    "year": int(year),
+                    "mean": float(numeric.mean()),
+                    "count": int(numeric.size),
+                })
+        trend.sort(key=lambda item: item["year"])
     selected_years = sorted({int(row["reporting_year"]) for row in values if row.get("reporting_year") is not None})
     return {
         "filters": normalized_search_args(filters),
@@ -804,6 +819,7 @@ def build_analysis_dataset(session: Session, filters: dict[str, Any], *, limit: 
         "returned_record_count": len(values),
         "available_variables": metrics,
         "missing_values": missing_summary,
+        "trend": trend,
         "records": values,
     }
 

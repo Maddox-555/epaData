@@ -253,16 +253,20 @@ function loadDatasets() {
       datasetsBody.innerHTML = "";
       rows.forEach(row => {
         const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${row.dataset_id}</td>
-          <td>${row.dataset_name}</td>
-          <td>${row.data_source}</td>
-          <td>${row.reporting_year}</td>
-          <td>${row.status}</td>
-          <td>${row.raw_records}</td>
-          <td>${row.accepted_records}</td>
-          <td>${row.rejected_records}</td>
-        `;
+        [
+          row.dataset_id,
+          row.dataset_name,
+          row.data_source,
+          row.reporting_year,
+          row.status,
+          row.raw_records,
+          row.accepted_records,
+          row.rejected_records
+        ].forEach(value => {
+          const cell = document.createElement("td");
+          cell.textContent = value === null || value === undefined ? "—" : value;
+          tr.appendChild(cell);
+        });
         datasetsBody.appendChild(tr);
       });
     });
@@ -453,10 +457,11 @@ function renderSummary(summary, metric, groupBy, chartType, records) {
 function renderTrend(records, metric) {
   const byYear = {};
   records.forEach(row => {
-    const value = row[metric];
+    const year = row.year ?? row.reporting_year;
+    const value = row.mean ?? row[metric];
     if (value !== null && value !== undefined) {
-      byYear[row.reporting_year] = byYear[row.reporting_year] || [];
-      byYear[row.reporting_year].push(Number(value));
+      byYear[year] = byYear[year] || [];
+      byYear[year].push(Number(value));
     }
   });
   const years = Object.keys(byYear).sort();
@@ -488,7 +493,7 @@ async function loadAnalysis() {
     currentAnalysisDataset = dataset;
     currentAnalysisSummary = summary;
     renderSummary(summary, params.get("metric"), params.get("group_by"), chartType, dataset.records);
-    renderTrend(dataset.records, params.get("metric"));
+    renderTrend(dataset.trend || dataset.records, params.get("metric"));
     document.getElementById("analysis-record-count").textContent = dataset.selected_record_count.toLocaleString();
     document.getElementById("analysis-facility-count").textContent = dataset.selected_facility_count.toLocaleString();
     document.getElementById("analysis-unit-count").textContent = dataset.selected_unit_count.toLocaleString();

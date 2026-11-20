@@ -278,6 +278,25 @@ def test_comparison_supports_normalized_group_statistics(client):
     assert response.json["absolute_difference"] == -5
 
 
+def test_analysis_trend_uses_all_selected_years_not_plot_sample_limit(client):
+    rows = [
+        f"100,Test Plant,KY,U1,{year},10,{year * 10}\n".encode()
+        for year in range(2020, 2025)
+    ]
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
+        b"Gross Load,CO2 Mass\n"
+        + b"".join(rows)
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+
+    response = client.get("/api/analysis/dataset?metric=co2_mass&limit=2")
+
+    assert response.status_code == 200
+    assert len(response.json["records"]) == 2
+    assert [point["year"] for point in response.json["trend"]] == [2020, 2021, 2022, 2023, 2024]
+
+
 def test_prediction_uses_chronological_splits_and_excludes_target_leakage(client):
     content = (
         b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,"
@@ -342,6 +361,20 @@ def test_sources_endpoint_describes_supported_original_sources(client):
 
     assert response.status_code == 200
     assert response.json["epa-campd"]["supported_import"] is True
+
+
+def test_datasets_infers_reporting_year_from_imported_records(client):
+    content = (
+        b"EPA Facility ID,Facility Name,State,EPA Unit ID,Reporting Year,CO2 Mass\n"
+        b"100,Test Plant,OH,U1,2024,20\n"
+    )
+    assert upload(client, content, approve=True).json["status"] == "imported"
+
+    response = client.get("/api/datasets")
+
+    assert response.status_code == 200
+    assert response.json[0]["reporting_year"] == 2024
+    assert response.json[0]["reporting_years"] == [2024]
 
 
 def test_epa_campd_retrieval_records_source_url(client, monkeypatch):

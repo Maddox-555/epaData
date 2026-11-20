@@ -146,12 +146,40 @@ def create_app(database_url: str | None = None) -> Flask:
     def datasets() -> Any:
         with SessionLocal() as session:
             rows = session.scalars(select(Dataset).order_by(Dataset.retrieval_or_upload_date.desc())).all()
+            year_rows = session.execute(
+                select(
+                    AnnualRecord.dataset_id,
+                    func.min(AnnualRecord.reporting_year),
+                    func.max(AnnualRecord.reporting_year),
+                    func.count(func.distinct(AnnualRecord.reporting_year)),
+                )
+                .group_by(AnnualRecord.dataset_id)
+            ).all()
+            dataset_years = {
+                dataset_id: {
+                    "minimum": minimum,
+                    "maximum": maximum,
+                    "count": count,
+                }
+                for dataset_id, minimum, maximum, count in year_rows
+            }
             return jsonify([
                 {
                     "dataset_id": row.dataset_id,
                     "dataset_name": row.dataset_name,
                     "data_source": row.data_source,
-                    "reporting_year": row.reporting_year,
+                    "reporting_year": row.reporting_year
+                    if row.reporting_year is not None
+                    else (
+                        dataset_years.get(row.dataset_id, {}).get("minimum")
+                        if dataset_years.get(row.dataset_id, {}).get("count") == 1
+                        else None
+                    ),
+                    "reporting_years": (
+                        [dataset_years[row.dataset_id]["minimum"]]
+                        if row.dataset_id in dataset_years and dataset_years[row.dataset_id]["count"] == 1
+                        else []
+                    ),
                     "status": row.status,
                     "raw_records": row.number_of_raw_records,
                     "accepted_records": row.number_of_accepted_records,
