@@ -113,6 +113,34 @@ def _models() -> dict[str, Pipeline]:
     }
 
 
+def _feature_importance(model: Pipeline) -> list[dict[str, float | str]]:
+    estimator = model.named_steps["model"]
+    preprocessor = model.named_steps["preprocess"]
+    names = preprocessor.get_feature_names_out()
+    if hasattr(estimator, "feature_importances_"):
+        values = estimator.feature_importances_
+    elif hasattr(estimator, "coef_"):
+        values = abs(estimator.coef_)
+        if values.ndim > 1:
+            values = values[0]
+    else:
+        values = [0.0] * len(names)
+
+    importance: dict[str, float] = {feature: 0.0 for feature in FEATURES}
+    for transformed_name, value in zip(names, values):
+        source_name = transformed_name.split("__", 1)[-1]
+        source_feature = next(
+            (feature for feature in FEATURES if source_name == feature or source_name.startswith(f"{feature}_")),
+            source_name,
+        )
+        if source_feature in importance:
+            importance[source_feature] += float(value)
+    return [
+        {"feature": feature, "importance": _metric(value) or 0.0}
+        for feature, value in sorted(importance.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+
 def run_prediction(session: Session, *, state: str | None = None) -> dict[str, Any]:
     frame = _build_prediction_frame(session, state)
     if frame.empty:
@@ -133,13 +161,41 @@ def run_prediction(session: Session, *, state: str | None = None) -> dict[str, A
     x_validation, y_validation = frame.loc[split_masks["validation"], FEATURES], frame.loc[split_masks["validation"], PREDICTION_TARGET]
     x_test, y_test = frame.loc[split_masks["test"], FEATURES], frame.loc[split_masks["test"], PREDICTION_TARGET]
     results: dict[str, Any] = {}
+    split_predictions: dict[str, pd.Series] = {}
     for name, model in _models().items():
         model.fit(x_train, y_train)
+        split_predictions[name] = pd.Series(
+            model.predict(frame.loc[split_masks["validation"] | split_masks["test"], FEATURES]),
+            index=frame.index[split_masks["validation"] | split_masks["test"]],
+        )
         results[name] = {
             "validation": _prediction_metrics(y_validation, model.predict(x_validation)),
             "test": _prediction_metrics(y_test, model.predict(x_test)),
+            "feature_importance": _feature_importance(model),
         }
     best_model = min(results, key=lambda name: results[name]["validation"]["mae"] or float("inf"))
+    trend = (
+        frame.groupby("target_year", as_index=False)[PREDICTION_TARGET]
+        .sum()
+        .rename(columns={"target_year": "year", PREDICTION_TARGET: "actual_co2"})
+    )
+    trend["predicted_co2"] = None
+    selected_predictions = split_predictions[best_model]
+    predicted_by_year = (
+        frame.loc[selected_predictions.index, ["target_year"]]
+        .assign(predicted_co2=selected_predictions)
+        .groupby("target_year")["predicted_co2"]
+        .sum()
+    )
+    trend["predicted_co2"] = trend["year"].map(predicted_by_year)
+    trend = [
+        {
+            "year": int(row.year),
+            "actual_co2": _metric(row.actual_co2),
+            "predicted_co2": _metric(row.predicted_co2),
+        }
+        for row in trend.itertuples(index=False)
+    ]
     return {
         "target": PREDICTION_TARGET,
         "objective": "Predict next-year unit CO2 emissions in short tons.",
@@ -153,4 +209,6 @@ def run_prediction(session: Session, *, state: str | None = None) -> dict[str, A
         },
         "models": results,
         "selected_model": best_model,
+        "feature_importance": results[best_model]["feature_importance"],
+        "co2_trend": trend,
     }

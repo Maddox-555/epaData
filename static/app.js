@@ -586,10 +586,29 @@ predictionForm.addEventListener("submit", async event => {
       {x: names, y: names.map(name => data.models[name].test.mae), type: "bar", name: "MAE", marker: {color: "#2563eb"}},
       {x: names, y: names.map(name => data.models[name].test.rmse), type: "bar", name: "RMSE", marker: {color: "#f59e0b"}}
     ], plotLayout("Test-set prediction error", "Model", "Error (short tons)"), {responsive: true, displaylogo: false, barmode: "group"});
+    const importance = data.feature_importance;
+    const importanceLayout = plotLayout(`${labels[data.selected_model] || data.selected_model} feature importance`, "Importance", "Feature");
+    importanceLayout.margin = {...importanceLayout.margin, l: 240};
+    importanceLayout.yaxis = {...importanceLayout.yaxis, automargin: true, title: {text: "Feature", standoff: 45}};
+    Plotly.newPlot("prediction-importance-chart", [{
+      x: importance.map(item => item.importance).reverse(),
+      y: importance.map(item => item.feature).reverse(),
+      type: "bar",
+      orientation: "h",
+      marker: {color: "#10b981"},
+      hovertemplate: "%{y}<br>Importance: %{x:.4f}<extra></extra>"
+    }], importanceLayout, {responsive: true, displaylogo: false});
+    const trend = data.co2_trend;
+    Plotly.newPlot("prediction-trend-chart", [
+      {x: trend.map(item => item.year), y: trend.map(item => item.actual_co2), type: "scatter", mode: "lines+markers", name: "Actual CO₂", line: {color: "#2563eb"}, connectgaps: false},
+      {x: trend.map(item => item.year), y: trend.map(item => item.predicted_co2), type: "scatter", mode: "lines+markers", name: "Predicted CO₂", line: {color: "#f59e0b", dash: "dash"}, connectgaps: false}
+    ], plotLayout("Historical CO₂ and out-of-sample prediction", "Reporting year", "CO₂ mass (short tons)"), {responsive: true, displaylogo: false});
   } catch (error) {
     predictionStatus.textContent = error.message;
     predictionSummary.textContent = "";
     Plotly.purge("prediction-chart");
+    Plotly.purge("prediction-importance-chart");
+    Plotly.purge("prediction-trend-chart");
   }
 });
 

@@ -289,6 +289,10 @@ def test_prediction_uses_chronological_splits_and_excludes_target_leakage(client
     assert result["splits"]["test"]["target_year"] == 2023
     assert "next_year_co2_mass" not in result["features"]
     assert set(result["models"]) == {"mean_baseline", "ridge", "random_forest"}
+    assert result["feature_importance"]
+    assert {item["feature"] for item in result["feature_importance"]} == set(result["features"])
+    assert [row["year"] for row in result["co2_trend"]] == [2021, 2022, 2023]
+    assert result["co2_trend"][-1]["predicted_co2"] is not None
 
 
 def test_sources_endpoint_describes_supported_original_sources(client):

@@ -533,6 +533,8 @@ button { font-family: inherit; }
 .prediction-table th:not(:first-child) { letter-spacing: 0.02em; }
 .prediction-table .selected-model { background: #ecfdf5; font-weight: 700; }
 .prediction-note { color: var(--text-muted); line-height: 1.5; padding: 1rem 0; }
+.prediction-visuals h2 { color: var(--text-main); font-size: 1.1rem; margin-bottom: 0.5rem; }
+.prediction-importance { grid-column: 1 / -1; }
 
 @media (max-width: 700px) {
   .prediction-splits { grid-template-columns: 1fr; }
